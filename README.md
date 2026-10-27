@@ -54,6 +54,22 @@ Suggested cron (overlapping runs are prevented with a lock):
 15 */6 * * * /path/to/scripts/wordpress-metrics.sh >> /var/log/wordpress-metrics.log 2>&1
 ```
 
+## Raising Cloudflare minimum TLS
+
+`scripts/cloudflare-set-min-tls.sh` sets "Minimum TLS Version" to 1.2 across zones. It is a dry run
+unless you pass `--apply`, never lowers a zone that is already higher (e.g. 1.3) unless `--exact` is
+given, and writes a CSV audit log that can be replayed with `--rollback`.
+
+```bash
+./scripts/cloudflare-set-min-tls.sh                         # dry run: WordPress vhosts on this server
+./scripts/cloudflare-set-min-tls.sh --apply                 # apply to those zones
+./scripts/cloudflare-set-min-tls.sh --all-zones --apply     # every zone in the Cloudflare account
+./scripts/cloudflare-set-min-tls.sh example.com --apply     # specific domains
+./scripts/cloudflare-set-min-tls.sh --rollback min-tls-20261027-224500.csv --apply
+```
+
+Needs **Zone Settings: Edit** on the API token (the global key works as-is).
+
 ## Frontend
 
 Deploy the `frontend/` folder. Paths default to `/nas/...` and can be overridden in `config.php`
