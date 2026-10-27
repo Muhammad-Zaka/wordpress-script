@@ -9,13 +9,16 @@
 #   wordpress-metrics.sh site1 site2   # only the named vhosts
 #
 # Credentials (~/.site-setup/creds), either:
-#   cf_token="..."                      # preferred: scoped API token (Zone:Read, Zone Settings:Read)
+#   cf_token="..."                      # preferred: scoped API token, all READ permissions:
+#                                       #   Zone, Zone Settings, Zone WAF, Firewall Services, SSL and Certificates,
+#                                       #   Cache Rules, Config Rules, Transform Rules, Dynamic URL Redirects,
+#                                       #   Origin Rules, Page Rules, Bot Management, DNS (for DNSSEC), Email Routing Rules
 # or
 #   cf_email="..." ; cf_key="..."       # legacy Global API key
 
 set -uo pipefail
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 SCHEMA_VERSION=2
 
 # ---------------------------------------------------------------------------
@@ -31,14 +34,13 @@ CF_TIMEOUT=20                                    # seconds per Cloudflare API ca
 COLLECT_DISK_USAGE=1                             # set 0 to skip `du` on large sites
 DISK_TIMEOUT=120
 
-# Cloudflare settings recorded for each zone (compared against the standard in the dashboard)
-CF_SETTINGS=(
-    always_use_https automatic_https_rewrites ssl min_tls_version tls_1_3
-    opportunistic_encryption http2 h2_prioritization http3 0rtt
-    early_hints speed_brain rocket_loader mirage brotli
-    email_obfuscation hotlink_protection browser_check security_level
-    development_mode always_online cache_level browser_cache_ttl
-    automatic_platform_optimization
+CF_DELAY=0.15                                    # pause between Cloudflare calls (API limit: 1200 req / 5 min)
+
+# All zone settings come from one bulk call. These are fetched individually
+# only if the bulk response doesn't include them.
+CF_EXTRA_SETTINGS=(
+    speed_brain automatic_platform_optimization fonts early_hints
+    h2_prioritization image_resizing origin_max_http_version
 )
 
 # ---------------------------------------------------------------------------
@@ -91,6 +93,7 @@ trap 'rm -f "$ERR_FILE"' EXIT
 # Cloudflare GET helper: prints the response body, returns non-zero on failure
 cf_get() {
     local path="$1"
+    sleep "$CF_DELAY"
     curl -sS --max-time "$CF_TIMEOUT" --retry 2 --retry-delay 2 \
         -H "Content-Type: application/json" "${CF_AUTH[@]}" \
         "https://api.cloudflare.com/client/v4/$path"
@@ -103,6 +106,43 @@ zone_candidates() {
         echo "$name"
         name="${name#*.}"
     done
+}
+
+# --- Cloudflare result store (a per-site JSON file, avoids argument-size limits) ---
+# cf_store KEY      : read JSON from stdin, set it at dotted KEY in $CF_FILE
+# cf_append KEY     : read JSON from stdin, append it to the array at KEY
+cf_store() {
+    jq -c --arg k "$1" --slurpfile v /dev/stdin 'setpath($k | split("."); $v[0])' "$CF_FILE" > "$CF_FILE.tmp" \
+        && mv -f "$CF_FILE.tmp" "$CF_FILE"
+}
+cf_append() {
+    jq -c --arg k "$1" --slurpfile v /dev/stdin \
+        '($k | split(".")) as $p | setpath($p; (getpath($p) // []) + $v)' "$CF_FILE" > "$CF_FILE.tmp" \
+        && mv -f "$CF_FILE.tmp" "$CF_FILE"
+}
+cf_err_msg() {
+    jq -r '[.errors[]? | "\(.code) \(.message)"] | join("; ") | if . == "" then "invalid response" else . end' \
+        <<< "$1" 2>/dev/null || echo "invalid response"
+}
+cf_fetch_error() {
+    jq -nc --arg m "$1" '$m' | cf_append fetch_errors
+}
+# cf_collect KEY PATH [JQ_FILTER] [quiet]
+# GETs PATH, applies JQ_FILTER to .result and stores it at KEY.
+# Failures are recorded in cloudflare.fetch_errors (unless "quiet": endpoints that
+# are commonly unavailable on lower plans or with limited token permissions).
+cf_collect() {
+    local key="$1" path="$2" filter="${3:-.}" quiet="${4:-}" resp
+    if ! resp=$(cf_get "$path"); then
+        cf_fetch_error "$key: request failed"
+        return 1
+    fi
+    if jq -e '.success == true' <<< "$resp" >/dev/null 2>&1; then
+        jq -c ".result | $filter" <<< "$resp" | cf_store "$key"
+        return 0
+    fi
+    [[ -z "$quiet" ]] && cf_fetch_error "$key: $(cf_err_msg "$resp")"
+    return 1
 }
 
 # PHP evaluated inside each WordPress install for environment/health details.
@@ -232,7 +272,9 @@ collect_site() {
 
     # --- Cloudflare ---
     local CF_PLAN="none" CF_ZONE_ID="" CF_ZONE_NAME="" CF_STATUS="inactive" CF_PAUSED="false"
-    local CF_NS="[]" CF_SETTINGS_JSON="{}" CANDIDATE RESP
+    local CF_NS="[]" CANDIDATE RESP CF_FILE
+    CF_FILE=$(mktemp)
+    echo '{}' > "$CF_FILE"
     if [[ ${#CF_AUTH[@]} -gt 0 ]]; then
         while read -r CANDIDATE; do
             RESP=$(cf_get "zones?name=$CANDIDATE") || { add_error "Cloudflare zone lookup request failed"; break; }
@@ -251,28 +293,66 @@ collect_site() {
         done < <(zone_candidates "$DOMAIN")
 
         if [[ -n "$CF_ZONE_ID" ]]; then
-            # One bulk call for all settings, then fetch individually only what's missing
-            local WANTED ALL_SETTINGS="{}" MISSING S
-            WANTED=$(printf '%s\n' "${CF_SETTINGS[@]}" | jq -R . | jq -sc .)
-            RESP=$(cf_get "zones/$CF_ZONE_ID/settings")
-            if jq -e '.success == true' <<< "$RESP" >/dev/null 2>&1; then
-                ALL_SETTINGS=$(jq -c '[.result[] | {key: .id, value: .value}] | from_entries' <<< "$RESP")
-            else
-                add_error "Cloudflare bulk settings request failed"
-            fi
-            CF_SETTINGS_JSON=$(jq -c --argjson w "$WANTED" 'with_entries(select(.key as $k | $w | index($k)))' <<< "$ALL_SETTINGS")
+            local Z="zones/$CF_ZONE_ID" S RID
+            log "  Cloudflare zone $CF_ZONE_NAME ($CF_PLAN) - collecting configuration"
 
-            MISSING=$(jq -r --argjson w "$WANTED" '. as $s | $w[] | select($s[.] == null)' <<< "$CF_SETTINGS_JSON")
-            for S in $MISSING; do
-                RESP=$(cf_get "zones/$CF_ZONE_ID/settings/$S")
-                if jq -e '.success == true' <<< "$RESP" >/dev/null 2>&1; then
-                    CF_SETTINGS_JSON=$(jq -c --arg k "$S" --argjson v "$(jq -c '.result.value' <<< "$RESP")" '.[$k] = $v' <<< "$CF_SETTINGS_JSON")
+            # --- Zone settings: one bulk call, then individual calls for any missing ---
+            cf_collect settings "$Z/settings" '[.[] | {key: .id, value: .value}] | from_entries'
+            for S in "${CF_EXTRA_SETTINGS[@]}"; do
+                if jq -e --arg k "$S" '(.settings // {})[$k] == null' "$CF_FILE" >/dev/null; then
+                    cf_collect "settings.$S" "$Z/settings/$S" '.value' quiet
                 fi
             done
+            cf_collect settings.email_routing "$Z/email/routing" '.enabled // false'
 
-            RESP=$(cf_get "zones/$CF_ZONE_ID/email/routing")
+            # --- SSL/TLS ---
+            cf_collect ssl.universal_ssl              "$Z/ssl/universal/settings"          '.enabled'
+            cf_collect ssl.certificate_packs          "$Z/ssl/certificate_packs?status=all" \
+                '[.[] | {id, type, status, hosts, certificate_authority, validity_days, validation_method,
+                         expires_on: ([.certificates[]?.expires_on | select(. != null)] | min)}]'
+            cf_collect ssl.dnssec                     "$Z/dnssec"                          '.status'
+            cf_collect ssl.authenticated_origin_pulls "$Z/origin_tls_client_auth/settings" '.enabled'
+            cf_collect ssl.total_tls                  "$Z/acm/total_tls"                   '{enabled, certificate_authority}' quiet
+
+            # --- Cache ---
+            cf_collect cache.tiered_caching           "$Z/argo/tiered_caching"                     '.value'
+            cf_collect cache.smart_tiered_cache       "$Z/cache/tiered_cache_smart_topology_enable" '.value' quiet
+            cf_collect cache.regional_tiered_cache    "$Z/cache/regional_tiered_cache"             '.value' quiet
+            cf_collect cache.cache_reserve            "$Z/cache/cache_reserve"                     '.value' quiet
+
+            # --- Speed ---
+            cf_collect speed.argo_smart_routing       "$Z/argo/smart_routing" '.value' quiet
+
+            # --- WAF / security ---
+            cf_collect security.bot_management        "$Z/bot_management" '.'
+            cf_collect security.leaked_credential_checks "$Z/leaked-credential-checks" '.enabled' quiet
+            cf_collect security.ip_access_rules       "$Z/firewall/access_rules/rules?per_page=100" \
+                '[.[] | {mode, target: .configuration.target, value: .configuration.value, notes, scope: .scope.type}]'
+            cf_collect security.zone_lockdowns        "$Z/firewall/lockdowns?per_page=100" \
+                '[.[] | {description, paused, urls, configurations}]' quiet
+            cf_collect security.ua_rules              "$Z/firewall/ua_rules?per_page=100" \
+                '[.[] | {description, mode, paused, value: .configuration.value}]' quiet
+
+            # --- Legacy page rules ---
+            cf_collect page_rules "$Z/pagerules" \
+                '[.[] | {status, priority, target: (.targets[0].constraint.value // ""), actions: [.actions[] | {id, value}]}]'
+
+            # --- Rulesets: WAF custom/managed/rate limiting, cache, redirect, transform, config, origin... ---
+            echo '[]' | cf_store rulesets
+            RESP=$(cf_get "$Z/rulesets")
             if jq -e '.success == true' <<< "$RESP" >/dev/null 2>&1; then
-                CF_SETTINGS_JSON=$(jq -c --argjson v "$(jq '.result.enabled // false' <<< "$RESP")" '.email_routing = $v' <<< "$CF_SETTINGS_JSON")
+                jq -c '[.result[] | {key: .id, value: .name}] | from_entries' <<< "$RESP" | cf_store ruleset_names
+                for RID in $(jq -r '.result[] | select(.kind == "zone") | .id' <<< "$RESP"); do
+                    cf_collect "_ruleset" "$Z/rulesets/$RID" \
+                        '{id, name, phase, last_updated,
+                          rules: [(.rules // [])[] | {id, description: (.description // ""), expression, action,
+                                   enabled, action_parameters, ratelimit, logging, last_updated}
+                                  | with_entries(select(.value != null))]}' \
+                    && jq -c '._ruleset' "$CF_FILE" | cf_append rulesets
+                done
+                jq -c 'del(._ruleset)' "$CF_FILE" > "$CF_FILE.tmp" && mv -f "$CF_FILE.tmp" "$CF_FILE"
+            else
+                cf_fetch_error "rulesets: $(cf_err_msg "$RESP")"
             fi
         fi
     fi
@@ -303,7 +383,7 @@ collect_site() {
         --argjson cf_paused "$CF_PAUSED" \
         --arg cf_plan "$CF_PLAN" \
         --argjson cf_ns "$CF_NS" \
-        --argjson cf_settings "$CF_SETTINGS_JSON" \
+        --slurpfile cfx "$CF_FILE" \
         --argjson errors "$ERRORS" \
         '
         def regular: [.[] | select(.status != "must-use" and .status != "dropin")];
@@ -328,16 +408,18 @@ collect_site() {
 
             environment: ($env + {disk_bytes: $disk, uploads_bytes: $uploads}),
 
-            cloudflare: {
+            cloudflare: ({
                 zone_id: $cf_zone_id,
                 zone_name: $cf_zone_name,
                 status: $cf_status,
                 paused: $cf_paused,
                 plan: $cf_plan,
                 is_pro_or_higher: ($cf_plan | test("(?i)pro|business|enterprise")),
-                name_servers: $cf_ns,
-                settings: $cf_settings
-            },
+                name_servers: $cf_ns
+            } + ($cfx[0] // {}) + {
+                settings: ($cfx[0].settings // {}),
+                fetch_errors: ($cfx[0].fetch_errors // [])
+            }),
 
             plugins: {
                 total: ($plugins | regular | length),
@@ -356,7 +438,8 @@ collect_site() {
             },
 
             dropins: $dropins
-        }') || { warn "$VHOST: failed to build report"; return 1; }
+        }') || { warn "$VHOST: failed to build report"; rm -f "$CF_FILE"; return 1; }
+    rm -f "$CF_FILE"
 
     # Write atomically so PHP never reads a partially written report
     local OUTPUT_FILE="$DATA_DIR/$VHOST.json" TEMP_FILE

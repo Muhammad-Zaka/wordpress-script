@@ -4,6 +4,7 @@
  */
 
 $config = require __DIR__ . '/config.php';
+require_once __DIR__ . '/cloudflare_lib.php';
 
 // ---------------------------------------------------------------------------
 // Optional basic auth
@@ -166,6 +167,17 @@ function health_checks(array $s, array $config): array
         $add('warning', 'Old PHP', 'PHP ' . $env['php_version'] . ' (min ' . $config['min_php_version'] . ')');
     if (($env['autoload_bytes'] ?? 0) > $config['max_autoload_bytes'])
         $add('warning', 'Large autoload', human_bytes($env['autoload_bytes']) . ' autoloaded options');
+    $cfs = $s['cloudflare']['settings'] ?? [];
+    if (($cfs['security_level'] ?? '') === 'under_attack') $add('warning', 'Under Attack mode on', 'All visitors are being challenged');
+    if (($cfs['development_mode'] ?? '') === 'on')        $add('warning', 'Development mode on', 'Cloudflare cache is bypassed');
+    foreach ($s['cloudflare']['ssl']['certificate_packs'] ?? [] as $cp) {
+        if (($cp['status'] ?? '') !== 'active' && ($cp['status'] ?? '') !== '') {
+            $add('danger', 'Edge certificate ' . $cp['status'], implode(', ', $cp['hosts'] ?? []));
+        } elseif (!empty($cp['expires_on']) && strtotime($cp['expires_on']) < time() + 14 * 86400) {
+            $add('danger', 'Edge certificate expiring', 'Expires ' . date('Y-m-d', strtotime($cp['expires_on'])));
+        }
+    }
+    if (!empty($s['cloudflare']['fetch_errors']))         $add('info', 'Cloudflare data incomplete', count($s['cloudflare']['fetch_errors']) . ' API call(s) failed');
     if ($s['_cf']['high_fails'] > 0)                     $add('warning', 'Cloudflare non-compliant', $s['_cf']['high_fails'] . ' high-severity setting(s)');
 
     if (!empty($env['wp_debug']) && empty($env['wp_debug_display'])) $add('info', 'WP_DEBUG on');

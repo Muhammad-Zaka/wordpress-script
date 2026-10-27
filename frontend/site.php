@@ -183,64 +183,7 @@ page_header($s['domain'] . ' · WordPress Fleet');
     <div class="tab-pane fade" id="t-cf">
         <?php if (!$s['_has_cf']): ?>
             <div class="alert alert-light border">No active Cloudflare zone found for this site.</div>
-        <?php else: ?>
-        <div class="row g-4">
-            <div class="col-lg-4">
-                <div class="card rounded-4 p-4 h-100">
-                    <div class="section-title mb-3">Zone</div>
-                    <dl class="row kv mb-0">
-                        <dt class="col-5">Zone</dt><dd class="col-7"><?= h($cfd['zone_name'] ?? $s['domain']) ?></dd>
-                        <dt class="col-5">Plan</dt><dd class="col-7"><?= h($cfd['plan'] ?? '—') ?></dd>
-                        <dt class="col-5">Status</dt><dd class="col-7"><?= h($cfd['status'] ?? '—') ?><?= !empty($cfd['paused']) ? ' <span class="badge bg-danger">paused</span>' : '' ?></dd>
-                        <dt class="col-5">Zone ID</dt><dd class="col-7 mono text-break"><?= h($cfd['zone_id'] ?? '—') ?></dd>
-                        <?php if (!empty($cfd['name_servers'])): ?><dt class="col-5">Nameservers</dt><dd class="col-7 mono small"><?= implode('<br>', array_map('h', $cfd['name_servers'])) ?></dd><?php endif; ?>
-                    </dl>
-                    <hr>
-                    <div class="section-title mb-2">Compliance</div>
-                    <div class="display-6 fw-bold"><?= $cf['score'] ?? '—' ?><span class="fs-5 text-muted">%</span></div>
-                    <div class="muted-xs"><?= $cf['passed'] ?> of <?= $cf['evaluated'] ?> collected settings match the standard</div>
-                </div>
-            </div>
-            <div class="col-lg-8">
-                <div class="card rounded-4 overflow-hidden">
-                    <div class="table-responsive">
-                        <table class="table align-middle mb-0">
-                            <thead class="text-uppercase"><tr><th class="ps-4">Setting</th><th>Severity</th><th>Standard</th><th>Actual</th><th class="pe-4">Result</th></tr></thead>
-                            <tbody>
-                            <?php
-                            $checks = $cf['checks'];
-                            $order = ['fail' => 0, 'missing' => 2, 'pass' => 1];
-                            usort($checks, fn($a, $b) => $order[$a['state']] <=> $order[$b['state']]);
-                            foreach ($checks as $c): ?>
-                                <tr>
-                                    <td class="ps-4"><div class="fw-semibold"><?= h($c['label']) ?></div><div class="muted-xs mono"><?= h($c['key']) ?></div></td>
-                                    <td><span class="badge rounded-pill bg-<?= ['high' => 'danger', 'medium' => 'warning', 'low' => 'secondary'][$c['severity']] ?>-subtle text-<?= ['high' => 'danger', 'medium' => 'warning', 'low' => 'secondary'][$c['severity']] ?>-emphasis"><?= h($c['severity']) ?></span></td>
-                                    <td class="mono"><?= h($c['expect']) ?></td>
-                                    <td class="mono"><?= $c['actual'] === null ? '<span class="text-muted">not collected</span>' : h($c['actual']) ?></td>
-                                    <td class="pe-4">
-                                        <?php if ($c['state'] === 'pass'): ?><i class="bi bi-check-circle-fill text-success"></i>
-                                        <?php elseif ($c['state'] === 'fail'): ?><i class="bi bi-x-circle-fill text-danger"></i>
-                                        <?php else: ?><i class="bi bi-dash-circle text-muted"></i><?php endif; ?>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                <?php
-                $extra = array_diff_key($cfd['settings'] ?? [], $config['cloudflare_standard']);
-                if ($extra): ?>
-                <div class="card rounded-4 p-4 mt-4">
-                    <div class="section-title mb-2">Other collected settings</div>
-                    <div class="d-flex flex-wrap gap-2">
-                        <?php foreach ($extra as $k => $v): ?><span class="badge bg-light text-dark border mono"><?= h($k) ?>: <?= h(fmt_value($v)) ?></span><?php endforeach; ?>
-                    </div>
-                </div>
-                <?php endif; ?>
-            </div>
-        </div>
-        <?php endif; ?>
+        <?php else: require __DIR__ . '/site_cloudflare.php'; endif; ?>
     </div>
 
     <!-- Wordfence -->

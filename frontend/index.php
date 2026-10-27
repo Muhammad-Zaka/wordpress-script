@@ -146,6 +146,9 @@ page_header('WordPress Fleet Control Center');
                                 <span class="muted-xs"><?= $sc ?>%</span>
                             <?php endif; ?>
                         </div>
+                        <?php $rcnt = cf_rule_counts($s); if (isset($s['cloudflare']['rulesets'])): ?>
+                            <div class="muted-xs mt-1"><?= $rcnt['enabled'] ?> active rule<?= $rcnt['enabled'] === 1 ? '' : 's' ?></div>
+                        <?php endif; ?>
                     <?php endif; ?>
                 </td>
                 <td>
