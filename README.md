@@ -10,7 +10,7 @@ frontend/index.php             fleet dashboard
 frontend/site.php              per-site detail page
 frontend/site_cloudflare.php   Cloudflare tab (SSL/TLS, WAF, Rules, Speed, Cache, Network, Standard)
 frontend/cloudflare_lib.php    setting catalogue, rule phases, rule summaries
-frontend/layout.php            shared page header/footer
+frontend/layout.php            shared page header/footer and design tokens (light + dark)
 ```
 
 ## Collector
@@ -59,8 +59,14 @@ Suggested cron (overlapping runs are prevented with a lock):
 Deploy the `frontend/` folder. Paths default to `/nas/...` and can be overridden in `config.php`
 or with `WPM_METRICS_DIR` / `WPM_MALWARE_DIR` environment variables.
 
+Backups are read from `/nas/metrics/public_html/backups/<vhost>.csv` (columns: File Name, Backup Date,
+Backup Type, Extension). `backup_max_age_days` in `config.php` sets how old the newest backup of each type
+may be before the site is flagged (default: Database and Database Archive, 2 days). Override the folder
+with `WPM_BACKUPS_DIR`.
+
 The Cloudflare standard lives in `config.php` → `cloudflare_standard`. Each rule has an expected
 value (or list of values) and a severity; any `high` failure marks the zone as non-compliant.
+Add `'skip_plans' => ['Free']` to a rule for features a plan doesn't include (APO is set up this way).
 
 Local preview against the sample data:
 

@@ -12,6 +12,16 @@ return [
     // Wordfence scan CSVs (one per site, named <vhost>.csv)
     'malware_dir' => getenv('WPM_MALWARE_DIR') ?: '/nas/metrics/public_html/malware-reports/',
 
+    // Backup report CSVs (one per site, named <vhost>.csv)
+    'backups_dir' => getenv('WPM_BACKUPS_DIR') ?: '/nas/metrics/public_html/backups/',
+
+    // Flag a site when its newest backup of a type is older than N days.
+    // The first type listed is shown in the dashboard's Backups column.
+    'backup_max_age_days' => [
+        'Database'         => 2,
+        'Database Archive' => 2,
+    ],
+
     // Set true if the Wordfence CSVs always start with a header row.
     // With false, ANY non-empty row counts as an issue (the original behaviour).
     'wordfence_csv_has_header' => false,
@@ -43,6 +53,7 @@ return [
      *   expect   => a value, or a list of acceptable values
      *   path     => (optional) key inside an object value, e.g. APO's "enabled"
      *   severity => high | medium | low   (high failures make a zone non-compliant)
+     *   skip_plans => (optional) Cloudflare plans the rule doesn't apply to, e.g. ['Free']
      * Settings missing from a report (older script versions) show as "not collected"
      * and are not counted against the zone.
      */
@@ -63,7 +74,7 @@ return [
         'hotlink_protection'              => ['label' => 'Hotlink Protection',        'expect' => 'on',  'severity' => 'low'],
         'browser_check'                   => ['label' => 'Browser Integrity Check',   'expect' => 'on',  'severity' => 'medium'],
         'development_mode'                => ['label' => 'Development Mode',          'expect' => 'off', 'severity' => 'medium'],
-        'automatic_platform_optimization' => ['label' => 'APO for WordPress',         'expect' => true,  'path' => 'enabled', 'severity' => 'medium'],
+        'automatic_platform_optimization' => ['label' => 'APO for WordPress',         'expect' => true,  'path' => 'enabled', 'severity' => 'medium', 'skip_plans' => ['Free']],
         'email_routing'                   => ['label' => 'Email Routing',             'expect' => true,  'severity' => 'low'],
     ],
 ];
