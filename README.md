@@ -60,8 +60,9 @@ Deploy the `frontend/` folder. Paths default to `/nas/...` and can be overridden
 or with `WPM_METRICS_DIR` / `WPM_MALWARE_DIR` environment variables.
 
 Backups are read from `/nas/metrics/public_html/backups/<vhost>.csv` (columns: File Name, Backup Date,
-Backup Type, Extension). `backup_max_age_days` in `config.php` sets how old the newest backup of each type
-may be before the site is flagged (default: Database and Database Archive, 2 days). Override the folder
+Backup Type, Extension). Backups are informational only (Backups tab and dashboard column); they don't raise warnings.
+`backup_max_age_days` in `config.php` sets which types the 30-day strip expects and the age shown as
+"older than N days" in the tab. Override the folder
 with `WPM_BACKUPS_DIR`.
 
 The Cloudflare standard lives in `config.php` → `cloudflare_standard`. Each rule has an expected
@@ -74,11 +75,17 @@ Local preview against the sample data:
 cd frontend && WPM_METRICS_DIR=../metrics/wordpress php -S localhost:8000
 ```
 
-## Report format (schema v2, script 2.1)
+The CMS tab lists every top-level folder in the document root with permissions, owner and a
+best-guess of what it contains (WordPress with version, Joomla, Drupal, Magento, PrestaShop, OpenCart,
+Laravel, PHP, static HTML), plus the WordPress folders and key files (`wp-config.php`, `.htaccess`, ...).
+World-writable entries and entries not owned by the site user are highlighted.
+
+## Report format (schema v2, script 2.2)
 
 New top-level keys compared to v1: `schema_version`, `script_version`, `aliases`, `errors`,
 `environment` (PHP/MySQL versions, debug flags, admins, autoload size, cron, disk usage),
 `wordpress.checksums`, `cloudflare.zone_name / paused / name_servers`. Script 2.1 adds
 `cloudflare.ssl`, `cloudflare.cache`, `cloudflare.speed`, `cloudflare.security`, `cloudflare.rulesets`,
-`cloudflare.ruleset_names`, `cloudflare.page_rules`, `cloudflare.fetch_errors`, and stores all zone settings. The dashboard reads
+`cloudflare.ruleset_names`, `cloudflare.page_rules`, `cloudflare.fetch_errors`, and stores all zone settings.
+Script 2.2 adds `docroot` (folders and key files with mode, owner, group, modified, detected CMS). The dashboard reads
 v1 reports too; the new fields simply show as "not collected" until the script is re-run.

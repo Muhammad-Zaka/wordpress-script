@@ -37,6 +37,27 @@ $issues = $s['_health'];
 $order = ['danger' => 0, 'warning' => 1, 'info' => 2];
 usort($issues, fn($a, $b) => $order[$a['level']] <=> $order[$b['level']]);
 $serious = count(array_filter($issues, fn($c) => $c['level'] !== 'info'));
+$docroot = $s['docroot'] ?? null;
+$otherFolders = array_values(array_filter($docroot['folders'] ?? [], fn($f) => empty($f['wp_core'])));
+$coreFolders  = array_values(array_filter($docroot['folders'] ?? [], fn($f) => !empty($f['wp_core'])));
+
+/** World-writable = "others" have write permission (ignored for symlinks, which are always 777) */
+function world_writable(array $e): bool
+{
+    return ($e['type'] ?? 'dir') !== 'symlink' && isset($e['mode']) && (intval(substr($e['mode'], -1)) & 2);
+}
+
+function perm_cells(array $e, string $siteOwner): string
+{
+    $ww = world_writable($e);
+    $owner = ($e['owner'] ?? '?') . ':' . ($e['group'] ?? '?');
+    $ownerOff = ($e['owner'] ?? '') !== '' && $siteOwner !== '' && $e['owner'] !== $siteOwner;
+    return '<td><span class="mono"' . ($ww ? ' style="color: var(--warning)"' : '') . '>' . h($e['mode'] ?? '—') . '</span> '
+        . '<span class="mono t-faint t-small">' . h($e['perms'] ?? '') . '</span>'
+        . ($ww ? '<div class="t-small" style="color: var(--warning)">World-writable</div>' : '') . '</td>'
+        . '<td class="mono t-small"' . ($ownerOff ? ' style="color: var(--warning)" title="Site owner is ' . h($siteOwner) . '"' : '') . '>' . h($owner) . '</td>'
+        . '<td class="t-muted t-small">' . h(isset($e['modified']) ? date('j M Y, H:i', strtotime($e['modified'])) : '—') . '</td>';
+}
 
 page_header($s['domain'] . ' – Fleet health', 'All sites');
 ?>
@@ -99,6 +120,7 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-themes" type="button">Themes<span class="count"><?= $s['themes']['total'] ?></span></button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cf" type="button">Cloudflare</button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-backups" type="button">Backups<?php if ($bk['available']): ?><span class="count"><?= count($bk['rows']) ?></span><?php endif; ?></button>
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cms" type="button">CMS<?php if ($otherFolders): ?><span class="count"><?= count($otherFolders) ?></span><?php endif; ?></button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-wordfence" type="button">Wordfence<?php if ($wf['issues']): ?><span class="count" style="color: var(--danger)"><?= $wf['issues'] ?></span><?php endif; ?></button>
     <?php if ($s['errors'] || !empty($cfd['fetch_errors'])): ?>
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-log" type="button">Collector log</button>
@@ -243,11 +265,11 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
                             <td><?= h($t['latest']) ?> <span class="t-faint t-small"><?= $t['age_days'] === 0 ? 'today' : $t['age_days'] . 'd ago' ?></span></td>
                             <td><?= $t['count'] ?></td>
                             <td><?= h($t['oldest']) ?></td>
-                            <td><?= $max === null ? '<span class="t-faint">Not monitored</span>' : ($t['age_days'] > $max ? dot('danger', 'Overdue (max ' . $max . 'd)') : dot('ok', 'On schedule')) ?></td>
+                            <td><?= $max === null ? '<span class="t-faint">—</span>' : ($t['age_days'] > $max ? dot('warning', 'Older than ' . $max . 'd') : dot('ok', 'Within ' . $max . 'd')) ?></td>
                         </tr>
                     <?php endforeach; ?>
                     <?php foreach (array_diff(array_keys($config['backup_max_age_days']), array_keys($bk['types'])) as $missing): ?>
-                        <tr><td class="fw-medium"><?= h($missing) ?></td><td colspan="3" class="t-faint">No backups in report</td><td><?= dot('danger', 'Missing') ?></td></tr>
+                        <tr><td class="fw-medium"><?= h($missing) ?></td><td colspan="3" class="t-faint">No backups in report</td><td><span class="t-faint">—</span></td></tr>
                     <?php endforeach; ?>
                     </tbody>
                 </table>
@@ -308,6 +330,63 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
             if (more) more.addEventListener('click', () => { all = true; apply(); });
         })();
         </script>
+        <?php endif; ?>
+    </div>
+
+    <!-- CMS / document root -->
+    <div class="tab-pane fade" id="t-cms">
+        <?php if ($docroot === null): ?>
+            <p class="t-muted">Re-run the collector (v2.2+) to list the folders in this site's document root.</p>
+        <?php else: $siteOwner = (string) ($s['owner'] ?? $s['site']); ?>
+            <p class="t-muted">Folders in <span class="mono"><?= h($docroot['path'] ?? $s['site_path'] ?? '') ?></span> besides WordPress itself. Site owner is <span class="mono"><?= h($siteOwner) ?></span>.</p>
+            <section class="panel">
+                <div class="panel-head"><h2 class="t-h2 m-0">Other folders</h2><span class="t-faint t-small"><?= plural(count($otherFolders), 'folder') ?></span></div>
+                <?php if (!$otherFolders): ?>
+                    <div class="empty pt-0">Only WordPress folders are in the document root.</div>
+                <?php else: ?>
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead><tr><th>Folder</th><th>Contains</th><th>Permissions</th><th>Owner</th><th>Modified</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($otherFolders as $f): ?>
+                            <tr>
+                                <td>
+                                    <span class="mono fw-medium"><?= h($f['name']) ?>/</span>
+                                    <?php if (($f['type'] ?? '') === 'symlink'): ?><div class="t-faint t-small">Link to <span class="mono"><?= h($f['target'] ?? '?') ?></span></div><?php endif; ?>
+                                </td>
+                                <td><?= !empty($f['cms']) ? h($f['cms']) . (!empty($f['version']) ? ' <span class="mono t-muted">' . h($f['version']) . '</span>' : '') : '<span class="t-faint">Unknown</span>' ?></td>
+                                <?= perm_cells($f, $siteOwner) ?>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head"><h2 class="t-h2 m-0">WordPress folders and key files</h2></div>
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead><tr><th>Path</th><th>Permissions</th><th>Owner</th><th>Modified</th></tr></thead>
+                        <tbody>
+                        <?php
+                        $entries = array_merge(
+                            array_map(fn($f) => $f + ['label' => $f['name'] === '.' ? 'Document root' : $f['name']], array_values(array_filter($docroot['files'] ?? [], fn($f) => $f['name'] === '.'))),
+                            array_map(fn($f) => $f + ['label' => $f['name'] . '/'], $coreFolders),
+                            array_map(fn($f) => $f + ['label' => $f['name']], array_values(array_filter($docroot['files'] ?? [], fn($f) => $f['name'] !== '.')))
+                        );
+                        foreach ($entries as $e): ?>
+                            <tr>
+                                <td class="mono"><?= h($e['label']) ?></td>
+                                <?= perm_cells($e, $siteOwner) ?>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            <p class="t-faint t-small mt-2">Detection is a best guess from marker files (for example <span class="mono">wp-config.php</span>, <span class="mono">configuration.php</span>).</p>
         <?php endif; ?>
     </div>
 

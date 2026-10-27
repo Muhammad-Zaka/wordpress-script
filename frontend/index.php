@@ -8,12 +8,11 @@ require __DIR__ . '/layout.php';
 $rank = ['danger' => 0, 'warning' => 1, 'ok' => 2];
 usort($sites, fn($a, $b) => [$rank[$a['_worst']], $a['domain']] <=> [$rank[$b['_worst']], $b['domain']]);
 
-$n = ['all' => count($sites), 'danger' => 0, 'warning' => 0, 'ok' => 0, 'updates' => 0, 'backups' => 0,
+$n = ['all' => count($sites), 'danger' => 0, 'warning' => 0, 'ok' => 0, 'updates' => 0,
       'wordfence' => 0, 'drift' => 0, 'stale' => 0, 'pro' => 0, 'free' => 0];
 foreach ($sites as $s) {
     $n[$s['_worst']]++;
     if ($s['_needs_update'])        $n['updates']++;
-    if ($s['_backup_late'])         $n['backups']++;
     if ($s['_wf']['issues'] > 0)    $n['wordfence']++;
     if ($s['_cf']['failed_checks']) $n['drift']++;
     if ($s['_stale'])               $n['stale']++;
@@ -26,7 +25,6 @@ $filters = [
     ['all',       'All sites',         $n['all']],
     ['danger',    'Critical',          $n['danger']],
     ['updates',   'Updates pending',   $n['updates']],
-    ['backups',   'Backups overdue',   $n['backups']],
     ['wordfence', 'Wordfence findings', $n['wordfence']],
     ['drift',     'Cloudflare drift',  $n['drift']],
     ['stale',     'Stale reports',     $n['stale']],
@@ -130,7 +128,6 @@ page_header('Fleet health');
                 $issues = array_values(array_filter($s['_health'], fn($c) => $c['level'] !== 'info'));
                 $tags = [$s['_worst']];
                 if ($s['_needs_update'])        $tags[] = 'updates';
-                if ($s['_backup_late'])         $tags[] = 'backups';
                 if ($s['_wf']['issues'] > 0)    $tags[] = 'wordfence';
                 if ($cf['failed_checks'])       $tags[] = 'drift';
                 if ($s['_stale'])               $tags[] = 'stale';
@@ -177,9 +174,9 @@ page_header('Fleet health');
                 </td>
                 <td>
                     <?php if (!$bk['available']): ?><?= dot('off', 'No report') ?>
-                    <?php elseif (!$pb): ?><?= dot('danger', 'None') ?>
-                    <?php else: $late = $pb['age_days'] > ($config['backup_max_age_days'][$primaryBackup] ?? 2); ?>
-                        <?= dot($late ? 'danger' : 'ok', $pb['age_days'] === 0 ? 'Today' : ($pb['age_days'] === 1 ? 'Yesterday' : $pb['age_days'] . ' days ago'), $pb['latest']) ?>
+                    <?php elseif (!$pb): ?><span class="t-faint">None</span>
+                    <?php else: ?>
+                        <span title="<?= h($pb['latest']) ?>"><?= $pb['age_days'] === 0 ? 'Today' : ($pb['age_days'] === 1 ? 'Yesterday' : $pb['age_days'] . ' days ago') ?></span>
                     <?php endif; ?>
                 </td>
                 <td>

@@ -18,7 +18,7 @@
 
 set -uo pipefail
 
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.2.0"
 SCHEMA_VERSION=2
 
 # ---------------------------------------------------------------------------
@@ -143,6 +143,21 @@ cf_collect() {
     fi
     [[ -z "$quiet" ]] && cf_fetch_error "$key: $(cf_err_msg "$resp")"
     return 1
+}
+
+# Best-effort detection of what's installed in a folder
+detect_cms() {
+    local d="$1"
+    if   [[ -f "$d/wp-config.php" || -f "$d/wp-load.php" ]];                         then echo "WordPress"
+    elif [[ -f "$d/configuration.php" && -d "$d/administrator" ]];                   then echo "Joomla"
+    elif [[ -f "$d/core/lib/Drupal.php" || -f "$d/sites/default/settings.php" ]];    then echo "Drupal"
+    elif [[ -f "$d/app/etc/env.php" ]];                                              then echo "Magento"
+    elif [[ -f "$d/config/settings.inc.php" || -f "$d/app/config/parameters.php" ]]; then echo "PrestaShop"
+    elif [[ -f "$d/config.php" && -d "$d/admin" && -d "$d/catalog" ]];               then echo "OpenCart"
+    elif [[ -f "$d/artisan" ]];                                                      then echo "Laravel"
+    elif [[ -f "$d/index.php" ]];                                                    then echo "PHP"
+    elif [[ -f "$d/index.html" || -f "$d/index.htm" ]];                              then echo "Static HTML"
+    fi
 }
 
 # PHP evaluated inside each WordPress install for environment/health details.
@@ -270,6 +285,42 @@ collect_site() {
         fi
     done
 
+    # --- Document root: top-level folders with permissions + key files ---
+    local DOCROOT_FOLDERS="[]" DOCROOT_FILES="[]" LINE D_NAME D_TYPE D_PATH D_CMS D_VER P
+    DOCROOT_FOLDERS=$(
+        find "$WEB_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) \
+            -printf '%f\t%m\t%M\t%u\t%g\t%TY-%Tm-%TdT%TH:%TM\t%y\t%l\n' 2>/dev/null | sort |
+        while IFS= read -r LINE; do
+            D_NAME="${LINE%%$'\t'*}"
+            D_PATH="$WEB_ROOT/$D_NAME"
+            D_CMS="" D_VER=""
+            if [[ -d "$D_PATH" ]]; then
+                D_CMS=$(detect_cms "$D_PATH")
+                if [[ "$D_CMS" == "WordPress" && -f "$D_PATH/wp-includes/version.php" ]]; then
+                    D_VER=$(grep -oP "^\\\$wp_version\s*=\s*'\K[^']+" "$D_PATH/wp-includes/version.php" 2>/dev/null | head -n 1)
+                fi
+            fi
+            printf '%s\t%s\t%s\n' "$LINE" "$D_CMS" "$D_VER"
+        done |
+        jq -R -s -c '
+            def nz: if . == "" or . == null then null else . end;
+            split("\n") | map(select(length > 0) | split("\t") | {
+                name: .[0], mode: .[1], perms: .[2], owner: .[3], group: .[4], modified: .[5],
+                type: (if .[6] == "l" then "symlink" else "dir" end),
+                target: (.[7] | nz), cms: (.[8] | nz), version: (.[9] | nz),
+                wp_core: (.[0] | IN("wp-admin", "wp-includes", "wp-content"))
+            })'
+    ) || DOCROOT_FOLDERS="[]"
+    [[ -n "$DOCROOT_FOLDERS" ]] || DOCROOT_FOLDERS="[]"
+
+    for P in "" wp-config.php .htaccess index.php wp-content/uploads; do
+        [[ -e "$WEB_ROOT/$P" ]] || continue
+        DOCROOT_FILES=$(jq -c --arg name "${P:-.}" \
+            --arg info "$(stat -c '%a|%A|%U|%G|%y' "$WEB_ROOT/$P" 2>/dev/null)" \
+            '. + [($info | split("|")) as $i | {name: $name, mode: $i[0], perms: $i[1], owner: $i[2], group: $i[3], modified: ($i[4] // "" | .[0:16] | sub(" "; "T"))}]' \
+            <<< "$DOCROOT_FILES")
+    done
+
     # --- Cloudflare ---
     local CF_PLAN="none" CF_ZONE_ID="" CF_ZONE_NAME="" CF_STATUS="inactive" CF_PAUSED="false"
     local CF_NS="[]" CANDIDATE RESP CF_FILE
@@ -374,6 +425,8 @@ collect_site() {
         --argjson plugins "$PLUGINS" \
         --argjson themes "$THEMES" \
         --argjson dropins "$DROPINS" \
+        --argjson docroot_folders "$DOCROOT_FOLDERS" \
+        --argjson docroot_files "$DOCROOT_FILES" \
         --argjson env "$ENV_JSON" \
         --argjson disk "$DISK_BYTES" \
         --argjson uploads "$UPLOADS_BYTES" \
@@ -437,7 +490,13 @@ collect_site() {
                 items: $themes
             },
 
-            dropins: $dropins
+            dropins: $dropins,
+
+            docroot: {
+                path: $path,
+                folders: $docroot_folders,
+                files: $docroot_files
+            }
         }') || { warn "$VHOST: failed to build report"; rm -f "$CF_FILE"; return 1; }
     rm -f "$CF_FILE"
 

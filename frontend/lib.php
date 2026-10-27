@@ -252,20 +252,6 @@ function health_checks(array $s, array $config): array
         $add($s['_cf']['high_fails'] ? 'warning' : 'info', 'Cloudflare non-compliant', implode(', ', $labels));
     }
 
-    // Backups
-    $bk = $s['_bk'];
-    if (!$bk['available']) {
-        $add('info', 'No backup report', 'No CSV found for this site');
-    } else {
-        $late = [];
-        foreach ($config['backup_max_age_days'] as $type => $maxDays) {
-            $t = $bk['types'][$type] ?? null;
-            if (!$t)                          $late[] = "no $type backups";
-            elseif ($t['age_days'] > $maxDays) $late[] = "$type last " . $t['age_days'] . 'd ago';
-        }
-        if ($late) $add('danger', 'Backups overdue', ucfirst(implode(', ', $late)));
-    }
-
     if (!empty($env['wp_debug']) && empty($env['wp_debug_display'])) $add('info', 'WP_DEBUG on');
     if (($env['admins'] ?? 0) > $config['max_admins'])  $add('info', 'Many admins', $env['admins'] . ' administrator accounts');
     if (array_key_exists('disallow_file_edit', $env) && !$env['disallow_file_edit']) $add('info', 'File editor enabled', 'DISALLOW_FILE_EDIT not set');
@@ -326,7 +312,6 @@ function normalise_site(array $data, string $file, array $config): array
 
     $levels = array_column($data['_health'], 'level');
     $data['_worst'] = in_array('danger', $levels, true) ? 'danger' : (in_array('warning', $levels, true) ? 'warning' : 'ok');
-    $data['_backup_late'] = (bool) array_filter($data['_health'], fn($c) => $c['label'] === 'Backups overdue');
 
     return $data;
 }
