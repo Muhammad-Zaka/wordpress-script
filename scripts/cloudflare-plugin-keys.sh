@@ -118,6 +118,9 @@ fi
 
 declare -A TOKEN EMAIL TOKEN_OK
 while read -r ACC TOK MAIL _; do
+    # Tolerate Windows line endings and quoted values
+    ACC="${ACC//$'\r'/}"; TOK="${TOK//$'\r'/}"; MAIL="${MAIL//$'\r'/}"
+    TOK="${TOK#[\"\']}"; TOK="${TOK%[\"\']}"; MAIL="${MAIL#[\"\']}"; MAIL="${MAIL%[\"\']}"
     [[ -z "$ACC" || "$ACC" == \#* ]] && continue
     if [[ ! "$ACC" =~ ^[0-9a-f]{32}$ ]]; then echo "WARNING: skipping key file line - '$ACC' is not an account ID" >&2; continue; fi
     [[ -n "$TOK" ]] || { echo "WARNING: no token for account $ACC" >&2; continue; }
@@ -144,12 +147,20 @@ zone_candidates() {
 # Check each token is active before pushing it anywhere
 for ACC in "${!TOKEN[@]}"; do
     if [[ $VERIFY -eq 0 ]]; then TOKEN_OK[$ACC]=1; continue; fi
-    RESP=$(cf_get "user/tokens/verify" "${TOKEN[$ACC]}")
+    TOK="${TOKEN[$ACC]}"
+    # User-owned tokens verify at /user/tokens/verify, account-owned tokens at /accounts/<id>/tokens/verify
+    RESP=$(cf_get "user/tokens/verify" "$TOK")
+    if ! { cf_ok "$RESP" && [[ $(jq -r '.result.status' <<< "$RESP") == "active" ]]; }; then
+        RESP=$(cf_get "accounts/$ACC/tokens/verify" "$TOK")
+    fi
     if cf_ok "$RESP" && [[ $(jq -r '.result.status' <<< "$RESP") == "active" ]]; then
         TOKEN_OK[$ACC]=1
     else
         TOKEN_OK[$ACC]=0
-        echo "WARNING: token for account $ACC is not valid/active ($(jq -r '[.errors[]?.message] | join("; ")' <<< "$RESP" 2>/dev/null)) - its sites will be skipped" >&2
+        HINT=""
+        [[ "$TOK" =~ ^[0-9a-f]{37}$ ]] && HINT=" - this looks like a Global API Key, not an API token"
+        [[ ${#TOK} -ne 40 && -z "$HINT" ]] && HINT=" - it is ${#TOK} characters long; API tokens are 40"
+        echo "WARNING: token for account $ACC (…${TOK: -4}) is not valid/active ($(jq -r '[.errors[]?.message] | join("; ")' <<< "$RESP" 2>/dev/null))$HINT - its sites will be skipped" >&2
     fi
 done
 
