@@ -423,6 +423,8 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
                 </div>
                 <?php if (!$rep['available']): ?>
                     <div class="empty pt-0">No report yet.</div>
+                <?php elseif ($key === 'malware' && !$rep['count'] && $wf['malware_skipped']): ?>
+                    <div class="empty pt-0"><?= dot('off', 'Not scanned: ClamAV is not installed on the server, so the malware scan was skipped.') ?></div>
                 <?php elseif (!$rep['count']): ?>
                     <div class="empty pt-0"><?= dot('ok', $cleanText) ?></div>
                 <?php else: ?>

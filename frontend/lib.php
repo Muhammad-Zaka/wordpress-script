@@ -90,7 +90,7 @@ function read_wf_csv(string $file, array $labels, bool $forceHeader): array
 function load_wordfence(string $slug, array $config): array
 {
     $result = ['available' => false, 'issues' => 0, 'vulns' => 0, 'modified_count' => 0, 'db_count' => 0, 'pattern_count' => 0,
-               'audit_count' => 0, 'recent_count' => 0, 'total' => 0, 'scanned_at' => null, 'status' => null,
+               'audit_count' => 0, 'recent_count' => 0, 'total' => 0, 'malware_skipped' => false, 'scanned_at' => null, 'status' => null,
                'malware' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'vuln'    => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'modified' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
@@ -122,6 +122,7 @@ function load_wordfence(string $slug, array $config): array
         $st = json_decode((string) @file_get_contents($statusFile), true);
         if (is_array($st)) {
             $result['status'] = $st;
+            $result['malware_skipped'] = ($st['malware']['clamav'] ?? '') === 'skipped';
             foreach (['malware' => 'Malware scan', 'vuln' => 'Vulnerability scan'] as $k => $label) {
                 if (($st[$k]['state'] ?? 'ok') !== 'ok') $result['failed'][$k] = $label . ' ' . ($st[$k]['state'] === 'timeout' ? 'timed out' : 'failed');
             }

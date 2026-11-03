@@ -80,7 +80,7 @@ Additional checks (all in the same run and report):
 | Audit | administrators added since the first scan (or registered in the last 30 days), open registration with an admin/editor default role, `siteurl`/`home` pointing elsewhere, PHP files in uploads, world-writable files, backups/logs/`.git`/`.env` in the web root, changes to `wp-config.php` / `.htaccess` / `.user.ini` |
 | Recently changed | PHP files changed in the last 3 days, for review only (never alerts) |
 
-Baselines for admins and key file hashes are kept in `/var/lib/security-scan/<vhost>/`. The first run
+Baselines for admins and key file hashes are kept in `/nas/metrics/public_html/security-scans/<vhost>/` (root-only, `0700`, so the web server cannot serve them). The first run
 records the baseline; later runs flag what changed.
 
 ```bash

@@ -196,7 +196,7 @@ page_header('Fleet health');
                     <?php elseif ($parts): $first = array_shift($parts); ?><?= dot($first[0], $first[1]) ?>
                         <?php foreach ($parts as [$tone, $txt]): ?><div class="t-small" style="color: var(--<?= $tone ?>)"><?= h($txt) ?></div><?php endforeach; ?>
                     <?php elseif ($wfx['failed']): ?><?= dot('warning', 'Scan failed') ?>
-                    <?php else: ?><?= dot('ok', 'Clean') ?><?php endif; ?>
+                    <?php else: ?><?= $wfx['malware_skipped'] ? dot('ok', 'Clean', 'Malware scan skipped (ClamAV not installed)') . '<div class="t-small t-faint">no malware scan</div>' : dot('ok', 'Clean') ?><?php endif; ?>
                 </td>
                 <td>
                     <?php if (!$issues): ?><span class="t-faint">Nothing</span>

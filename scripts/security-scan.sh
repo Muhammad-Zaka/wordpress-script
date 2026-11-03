@@ -70,7 +70,7 @@ UPLOADS_MODE="php-only"
 WP_TIMEOUT=300
 
 # Extra checks
-STATE_DIR="/var/lib/security-scan"      # baselines: admin accounts, key file hashes
+STATE_DIR="/nas/metrics/public_html/security-scans"   # baselines: admin accounts, key file hashes (root-only)
 ADMIN_NEW_DAYS=30                       # flag administrator accounts this new
 KEYFILE_CHANGE_DAYS=7                   # flag wp-config.php/.htaccess changes for this many days
 RECENT_DAYS=3                           # list PHP files changed in the last N days (information only)
@@ -129,9 +129,11 @@ if [[ $SLACK -eq 1 && -z "$slack_webhook_url" && ( -z "$slack_bot_token" || -z "
     SLACK=0
 fi
 
-for d in "$MALWARE_REPORT_DIR" "$VULN_REPORT_DIR" "$STATUS_DIR" "$HISTORY_DIR" "$VULN_CACHE_DIR" "$STATE_DIR"; do
+for d in "$MALWARE_REPORT_DIR" "$VULN_REPORT_DIR" "$STATUS_DIR" "$HISTORY_DIR" "$VULN_CACHE_DIR"; do
     install -d -m 0755 "$d"
 done
+# Baselines hold admin logins/emails: keep them root-only (the folder is inside a web root)
+install -d -m 0700 "$STATE_DIR"; chmod 0700 "$STATE_DIR"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
