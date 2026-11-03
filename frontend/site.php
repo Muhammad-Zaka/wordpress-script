@@ -121,7 +121,7 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cf" type="button">Cloudflare</button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-backups" type="button">Backups<?php if ($bk['available']): ?><span class="count"><?= count($bk['rows']) ?></span><?php endif; ?></button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cms" type="button">CMS<?php if ($otherFolders): ?><span class="count"><?= count($otherFolders) ?></span><?php endif; ?></button>
-    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-wordfence" type="button">Wordfence<?php if ($wf['issues'] || $wf['vulns']): ?><span class="count" style="color: var(--<?= $wf['issues'] ? 'danger' : 'warning' ?>)"><?= $wf['issues'] + $wf['vulns'] ?></span><?php endif; ?></button>
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-security" type="button">Security<?php $secN = $wf['issues'] + $wf['vulns'] + $wf['modified_count']; if ($secN): ?><span class="count" style="color: var(--<?= $wf['issues'] ? 'danger' : 'warning' ?>)"><?= $secN ?></span><?php endif; ?></button>
     <?php if ($s['errors'] || !empty($cfd['fetch_errors'])): ?>
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-log" type="button">Collector log</button>
     <?php endif; ?>
@@ -390,10 +390,10 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
         <?php endif; ?>
     </div>
 
-    <!-- Wordfence -->
-    <div class="tab-pane fade" id="t-wordfence">
+    <!-- Security (malware, modified files, vulnerabilities) -->
+    <div class="tab-pane fade" id="t-security">
         <?php if (!$wf['available']): ?>
-            <p class="t-muted">No Wordfence scan report for this site yet. Reports are written by <span class="mono">scripts/wordfence-scan.sh</span>.</p>
+            <p class="t-muted">No security scan report for this site yet. Reports are written by <span class="mono">scripts/security-scan.sh</span>.</p>
         <?php else: ?>
             <p class="t-muted">
                 <?php if ($wf['scanned_at']): ?>Last scanned <?= h(human_age(time() - $wf['scanned_at'])) ?> <span class="t-faint">(<?= h(date('j M Y, H:i', $wf['scanned_at'])) ?>)</span><?php endif; ?>
@@ -406,6 +406,7 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
             <?php
             $sections = [
                 ['malware', 'Malware', 'No malware found in the last scan.', 'danger', 'file'],
+                ['modified', 'Modified files', 'Core and wordpress.org plugin files match the official versions.', 'warning', 'file'],
                 ['vuln', 'Vulnerable plugins, themes and core', 'No known vulnerabilities in installed versions.', 'warning', 'item'],
             ];
             foreach ($sections as [$key, $title, $cleanText, $tone, $unit]):

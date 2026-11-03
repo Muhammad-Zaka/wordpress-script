@@ -287,13 +287,18 @@ for VHOST_DIR in "${DIRS[@]}"; do
         > "$WORK/status.json" && publish "$WORK/status.json" "$STATUS_DIR/$VHOST.json"
 
     log "  malware: $MAL_COUNT finding(s) [$MAL_STATE, exit $MAL_CODE, ${MAL_SECS}s]   vulnerabilities: $VULN_COUNT [$VULN_STATE, exit $VULN_CODE, ${VULN_SECS}s]"
+    # Show Wordfence's own error message for failed scans
+    [[ "$MAL_STATE" != "ok" ]]  && printf '    malware scan said:\n%s\n' "$(sed 's/^/      /' <<< "${MAL_LOG:-<no output>}")"
+    [[ "$VULN_STATE" != "ok" ]] && printf '    vulnerability scan said:\n%s\n' "$(sed 's/^/      /' <<< "${VULN_LOG:-<no output>}")"
 
     # Counters + summary
     [[ "$MAL_COUNT" -gt 0 ]] && n_malware=$((n_malware + 1))
     [[ "$VULN_COUNT" -gt 0 ]] && n_vuln=$((n_vuln + 1))
     if [[ "$MAL_STATE" != "ok" || "$VULN_STATE" != "ok" ]]; then
         n_errors=$((n_errors + 1))
-        SUMMARY_LINES+=("• $VHOST: scan failed (malware: $MAL_STATE, vulnerabilities: $VULN_STATE)")
+        ERR_LINE=$(grep -m1 -iE 'error|invalid|denied|licen|not found|failed' <<< "$MAL_LOG"$'\n'"$VULN_LOG")
+        [[ -z "$ERR_LINE" ]] && ERR_LINE=$(grep -m1 . <<< "$MAL_LOG"$'\n'"$VULN_LOG")
+        SUMMARY_LINES+=("• $VHOST: scan failed (malware: $MAL_STATE, vulnerabilities: $VULN_STATE)${ERR_LINE:+ - ${ERR_LINE:0:150}}")
     fi
     if [[ "$MAL_COUNT" -gt 0 || "$VULN_COUNT" -gt 0 ]]; then
         SUMMARY_LINES+=("• $VHOST: $MAL_COUNT malware, $VULN_COUNT vulnerabilit$([[ $VULN_COUNT -eq 1 ]] && echo y || echo ies)")

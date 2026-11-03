@@ -58,7 +58,7 @@ function valid_slug(string $s): bool
 }
 
 // ---------------------------------------------------------------------------
-// Wordfence reports (written by scripts/wordfence-scan.sh)
+// Security scan reports (written by scripts/security-scan.sh; older Wordfence CSVs also work)
 //   malware_dir/<site>.csv, vuln_dir/<site>.csv, wordfence_status_dir/<site>.json
 // ---------------------------------------------------------------------------
 function read_wf_csv(string $file, array $labels, bool $forceHeader): array
@@ -89,14 +89,27 @@ function read_wf_csv(string $file, array $labels, bool $forceHeader): array
 
 function load_wordfence(string $slug, array $config): array
 {
-    $result = ['available' => false, 'issues' => 0, 'vulns' => 0, 'scanned_at' => null, 'status' => null,
+    $result = ['available' => false, 'issues' => 0, 'vulns' => 0, 'modified_count' => 0, 'scanned_at' => null, 'status' => null,
                'malware' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'vuln'    => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
+               'modified' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'failed'  => []];
     if (!valid_slug($slug)) return $result;
     $force = !empty($config['wordfence_csv_has_header']);
     $result['malware'] = read_wf_csv(rtrim($config['malware_dir'], '/') . "/$slug.csv", $config['wordfence_malware_columns'] ?? [], $force);
     $result['vuln']    = read_wf_csv(rtrim($config['vuln_dir'] ?? '', '/') . "/$slug.csv", $config['wordfence_vuln_columns'] ?? [], $force);
+
+    // security-scan.sh writes "source,file,detection": split malware hits from modified (checksum) files
+    $result['modified'] = ['available' => false, 'rows' => [], 'header' => [], 'count' => 0];
+    if (strtolower($result['malware']['header'][0] ?? '') === 'source') {
+        $hdr = array_slice($result['malware']['header'], 1);
+        $mal = $mod = [];
+        foreach ($result['malware']['rows'] as $r) {
+            if (strtolower((string) ($r[0] ?? '')) === 'checksum') $mod[] = array_slice($r, 1); else $mal[] = array_slice($r, 1);
+        }
+        $result['malware']  = array_merge($result['malware'], ['rows' => $mal, 'count' => count($mal), 'header' => $hdr]);
+        $result['modified'] = ['available' => true, 'rows' => $mod, 'count' => count($mod), 'header' => $hdr];
+    }
 
     $statusFile = rtrim($config['wordfence_status_dir'] ?? '', '/') . "/$slug.json";
     if (is_file($statusFile)) {
@@ -112,6 +125,7 @@ function load_wordfence(string $slug, array $config): array
     $result['available']  = $result['malware']['available'] || $result['vuln']['available'] || $result['status'] !== null;
     $result['issues']     = $result['malware']['count'];
     $result['vulns']      = $result['vuln']['count'];
+    $result['modified_count'] = $result['modified']['count'];
     $result['scanned_at'] = !empty($result['status']['scanned_at']) ? strtotime($result['status']['scanned_at'])
                           : (max($result['malware']['mtime'] ?? 0, $result['vuln']['mtime'] ?? 0) ?: null);
     return $result;
@@ -247,11 +261,12 @@ function health_checks(array $s, array $config): array
 
     if ($s['_stale'])                                    $add('warning', 'Report stale', 'Last collected ' . $s['_age']);
     if (!empty($s['errors']))                            $add('warning', 'Collector warnings', plural(count($s['errors']), 'warning') . ' during collection');
-    if ($s['_wf']['issues'] > 0)                         $add('danger', 'Malware found', plural($s['_wf']['issues'], 'file') . ' flagged by Wordfence');
+    if ($s['_wf']['issues'] > 0)                         $add('danger', 'Malware found', plural($s['_wf']['issues'], 'file') . ' flagged by the malware scan');
+    if ($s['_wf']['modified_count'] > 0)                 $add('warning', 'Modified files', plural($s['_wf']['modified_count'], 'file') . ' differ from the official WordPress/plugin versions');
     if ($s['_wf']['vulns'] > 0)                          $add('warning', 'Known vulnerabilities', plural($s['_wf']['vulns'], 'vulnerable plugin/theme/core item') . ', update needed');
-    foreach ($s['_wf']['failed'] as $msg)                $add('warning', 'Wordfence scan problem', $msg . ' on the last run');
+    foreach ($s['_wf']['failed'] as $msg)                $add('warning', 'Security scan problem', $msg . ' on the last run');
     if ($s['_wf']['scanned_at'] && time() - $s['_wf']['scanned_at'] > ($config['wordfence_stale_days'] ?? 8) * 86400)
-        $add('info', 'Wordfence scan is old', 'Last scanned ' . human_age(time() - $s['_wf']['scanned_at']));
+        $add('info', 'Security scan is old', 'Last scanned ' . human_age(time() - $s['_wf']['scanned_at']));
     if (($s['wordpress']['checksums'] ?? '') === 'failed') $add('danger', 'Core checksums failed', 'Core files modified or unexpected files present');
     if (!empty($s['cloudflare']['paused']))              $add('danger', 'Cloudflare paused', 'Traffic is bypassing Cloudflare');
     if (!empty($env['wp_debug_display']))                $add('danger', 'Debug output visible', 'WP_DEBUG with WP_DEBUG_DISPLAY on');

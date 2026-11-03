@@ -4,8 +4,9 @@ Collects WordPress + Cloudflare metrics for every OpenLiteSpeed vhost and shows 
 
 ```
 scripts/wordpress-metrics.sh   collector (run as root via cron) -> one JSON per site
-scripts/wordfence-scan.sh      Wordfence malware + vulnerability scans -> reports for the dashboard, Slack alerts
+scripts/security-scan.sh       vulnerability, modified-file and malware scans -> dashboard reports, Slack alerts
 scripts/cloudflare-set-min-tls.sh  raise Cloudflare minimum TLS across zones
+scripts/cloudflare-zone-ids.sh list Cloudflare Zone ID + Account ID for every site
 frontend/config.php            paths, thresholds, Cloudflare standard, optional auth
 frontend/lib.php               loading, normalising, health checks, compliance
 frontend/index.php             fleet dashboard
@@ -56,30 +57,53 @@ Suggested cron (overlapping runs are prevented with a lock):
 15 */6 * * * /path/to/scripts/wordpress-metrics.sh >> /var/log/wordpress-metrics.log 2>&1
 ```
 
-## Wordfence scans
+## Security scans
+
+Wordfence CLI was discontinued (no new licences; the free version reached end of life on
+14 Oct 2026), so `scripts/security-scan.sh` replaces `wordfence-scan.sh` with free tools:
+
+| Check | How |
+|---|---|
+| Known vulnerabilities | installed core/plugin/theme versions (WP-CLI) matched against the free [WPVulnerability](https://www.wpvulnerability.net) database; answers cached 12h |
+| Modified files | `wp core verify-checksums` and `wp plugin verify-checksums --all` (wordpress.org plugins) |
+| Malware | one ClamAV scan for all sites using Linux Malware Detect (maldet) signatures |
+
+WP-CLI runs with `--skip-plugins --skip-themes`, so a compromised site's code is never executed.
 
 ```bash
-sudo ./scripts/wordfence-scan.sh               # all WordPress vhosts
-sudo ./scripts/wordfence-scan.sh athleticia    # one or more vhosts
-sudo ./scripts/wordfence-scan.sh --no-slack    # no Slack messages
-sudo ./scripts/wordfence-scan.sh --notify-all  # alert for every site with findings, not just changes
+sudo ./scripts/security-scan.sh                 # all WordPress vhosts
+sudo ./scripts/security-scan.sh athleticia      # one or more vhosts
+sudo ./scripts/security-scan.sh --no-malware    # vulnerabilities + checksums only (fast)
+sudo ./scripts/security-scan.sh --no-slack
+sudo ./scripts/security-scan.sh --notify-all    # alert for every site with findings, not just changes
 ```
+
+One-time setup for the malware scan (Debian/Ubuntu):
+
+```bash
+sudo apt install clamav clamav-freshclam          # ClamAV + automatic signature updates
+cd /tmp && wget https://www.rfxn.com/downloads/maldetect-current.tar.gz
+tar xzf maldetect-current.tar.gz && cd maldetect-*/ && sudo ./install.sh   # installs maldet + daily signature updates
+sudo maldet -u                                    # fetch the latest maldet signatures now
+```
+
+ClamAV needs roughly 1-1.5 GB of free RAM while it loads signatures. Without ClamAV installed the
+script still runs the vulnerability and checksum checks.
+
+The malware scan skips media in `wp-content/uploads` (the slow part) but still scans PHP and other
+script files there. Set `UPLOADS_MODE` at the top of the script to `skip` or `full` to change that.
 
 Per site it writes:
 
 | File | Used by |
 |---|---|
-| `/nas/metrics/public_html/malware-reports/<vhost>.csv` | dashboard (malware) |
-| `/nas/metrics/public_html/vuln-reports/<vhost>.csv` | dashboard (vulnerabilities) |
-| `/nas/metrics/public_html/wordfence-status/<vhost>.json` | dashboard (scan time, failures) |
-| `/nas/metrics/wordfence-history/<vhost>/<date>-{malware,vuln}.csv` | history, kept 30 days |
+| `/nas/metrics/public_html/malware-reports/<vhost>.csv` | dashboard: malware + modified files (`source,file,detection`) |
+| `/nas/metrics/public_html/vuln-reports/<vhost>.csv` | dashboard: vulnerabilities (`type,slug,installed_version,vulnerability,severity,fixed_in,link`) |
+| `/nas/metrics/public_html/security-status/<vhost>.json` | dashboard: scan time, failures |
+| `/nas/metrics/security-history/<vhost>/<date>-{malware,vuln}.csv` | history, kept 30 days |
 | `/home/<vhost>/{malware,vuln}-scan.csv` | the original locations |
 
-The malware scan skips media in `wp-content/uploads` (the slow part) but still scans any PHP or other
-script files found there, since uploads is a common hiding place for backdoors. Set `UPLOADS_MODE` at the
-top of the script to `skip` (ignore uploads entirely) or `full` (scan everything).
-
-A scan that fails keeps the previous report (the dashboard shows the failure instead of "clean").
+A check that fails keeps the previous report (the dashboard shows the failure instead of "clean").
 Slack alerts are sent only when a site's findings change, with the CSVs attached, plus one summary
 per run. Slack settings go in `~/.site-setup/creds`:
 
@@ -89,7 +113,19 @@ slack_bot_token="xoxb-..."        # optional, to attach CSVs (scope: files:write
 slack_channel_id="C0123456789"    # channel ID, not #name
 ```
 
-Suggested cron: `30 2 * * * /path/to/scripts/wordfence-scan.sh >> /var/log/wordfence-scan.log 2>&1`
+Suggested cron: `30 2 * * * /path/to/scripts/security-scan.sh >> /var/log/security-scan.log 2>&1`
+
+## Cloudflare Zone and Account IDs
+
+```bash
+./scripts/cloudflare-zone-ids.sh                    # all vhosts: table on screen + CSV file
+./scripts/cloudflare-zone-ids.sh --wordpress-only   # only WordPress sites
+./scripts/cloudflare-zone-ids.sh --json             # JSON instead of the table
+./scripts/cloudflare-zone-ids.sh --csv zones.csv    # choose the CSV path
+```
+
+The CSV has: vhost, domain, wordpress, zone_name, zone_id, account_id, account_name, plan, status, note.
+Subdomain sites resolve to their parent zone. Needs only Zone: Read.
 
 ## Raising Cloudflare minimum TLS
 

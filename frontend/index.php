@@ -13,7 +13,7 @@ $n = ['all' => count($sites), 'danger' => 0, 'warning' => 0, 'ok' => 0, 'updates
 foreach ($sites as $s) {
     $n[$s['_worst']]++;
     if ($s['_needs_update'])        $n['updates']++;
-    if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0) $n['wordfence']++;
+    if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0 || $s['_wf']['modified_count'] > 0) $n['wordfence']++;
     if ($s['_cf']['failed_checks']) $n['drift']++;
     if ($s['_stale'])               $n['stale']++;
     if (!empty($s['cloudflare']['is_pro_or_higher'])) $n['pro']++; elseif ($s['_has_cf']) $n['free']++;
@@ -25,7 +25,7 @@ $filters = [
     ['all',       'All sites',         $n['all']],
     ['danger',    'Critical',          $n['danger']],
     ['updates',   'Updates pending',   $n['updates']],
-    ['wordfence', 'Wordfence findings', $n['wordfence']],
+    ['wordfence', 'Security findings', $n['wordfence']],
     ['drift',     'Cloudflare drift',  $n['drift']],
     ['stale',     'Stale reports',     $n['stale']],
     ['pro',       'Cloudflare Pro',    $n['pro']],
@@ -112,7 +112,7 @@ page_header('Fleet health');
                 <th class="sortable" data-key="updates">Updates</th>
                 <th class="sortable" data-key="cf">Cloudflare</th>
                 <th class="sortable" data-key="backup"><?= h($primaryBackup) ?> backup</th>
-                <th class="sortable" data-key="wf">Wordfence</th>
+                <th class="sortable" data-key="wf">Security</th>
                 <th class="sortable" data-key="health">Needs attention</th>
                 <th class="sortable" data-key="age">Checked</th>
             </tr>
@@ -129,7 +129,7 @@ page_header('Fleet health');
                 usort($issues, fn($a, $b) => ($a['level'] === 'danger' ? 0 : 1) <=> ($b['level'] === 'danger' ? 0 : 1));
                 $tags = [$s['_worst']];
                 if ($s['_needs_update'])        $tags[] = 'updates';
-                if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0) $tags[] = 'wordfence';
+                if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0 || $s['_wf']['modified_count'] > 0) $tags[] = 'wordfence';
                 if ($cf['failed_checks'])       $tags[] = 'drift';
                 if ($s['_stale'])               $tags[] = 'stale';
                 if (!empty($s['cloudflare']['is_pro_or_higher'])) $tags[] = 'pro';
@@ -181,11 +181,18 @@ page_header('Fleet health');
                     <?php endif; ?>
                 </td>
                 <td>
-                    <?php if (!$s['_wf']['available']): ?><?= dot('off', 'No scan') ?>
-                    <?php elseif ($s['_wf']['issues']): ?><?= dot('danger', plural($s['_wf']['issues'], 'malware file')) ?>
-                        <?php if ($s['_wf']['vulns']): ?><div class="t-small" style="color: var(--warning)"><?= $s['_wf']['vulns'] === 1 ? '1 vulnerability' : $s['_wf']['vulns'] . ' vulnerabilities' ?></div><?php endif; ?>
-                    <?php elseif ($s['_wf']['vulns']): ?><?= dot('warning', $s['_wf']['vulns'] === 1 ? '1 vulnerability' : $s['_wf']['vulns'] . ' vulnerabilities') ?>
-                    <?php elseif ($s['_wf']['failed']): ?><?= dot('warning', 'Scan failed') ?>
+                    <?php
+                    $wfx = $s['_wf'];
+                    $parts = array_filter([
+                        $wfx['issues'] ? ['danger', plural($wfx['issues'], 'malware file')] : null,
+                        $wfx['modified_count'] ? ['warning', plural($wfx['modified_count'], 'modified file')] : null,
+                        $wfx['vulns'] ? ['warning', $wfx['vulns'] === 1 ? '1 vulnerability' : $wfx['vulns'] . ' vulnerabilities'] : null,
+                    ]);
+                    ?>
+                    <?php if (!$wfx['available']): ?><?= dot('off', 'No scan') ?>
+                    <?php elseif ($parts): $first = array_shift($parts); ?><?= dot($first[0], $first[1]) ?>
+                        <?php foreach ($parts as [$tone, $txt]): ?><div class="t-small" style="color: var(--<?= $tone ?>)"><?= h($txt) ?></div><?php endforeach; ?>
+                    <?php elseif ($wfx['failed']): ?><?= dot('warning', 'Scan failed') ?>
                     <?php else: ?><?= dot('ok', 'Clean') ?><?php endif; ?>
                 </td>
                 <td>

@@ -9,7 +9,7 @@ return [
     // Where wordpress-metrics.sh writes one JSON file per site
     'metrics_dir' => getenv('WPM_METRICS_DIR') ?: '/nas/wp-metrics-test1/',
 
-    // Wordfence scan CSVs (one per site, named <vhost>.csv)
+    // Malware scan CSVs (one per site, named <vhost>.csv)
     'malware_dir' => getenv('WPM_MALWARE_DIR') ?: '/nas/metrics/public_html/malware-reports/',
 
     // Backup report CSVs (one per site, named <vhost>.csv)
@@ -22,16 +22,16 @@ return [
         'Database Archive' => 2,
     ],
 
-    // Wordfence reports written by scripts/wordfence-scan.sh
+    // Security scan reports written by scripts/security-scan.sh
     'vuln_dir'             => getenv('WPM_VULN_DIR') ?: '/nas/metrics/public_html/vuln-reports/',
-    'wordfence_status_dir' => getenv('WPM_WF_STATUS_DIR') ?: '/nas/metrics/public_html/wordfence-status/',
+    'wordfence_status_dir' => getenv('WPM_WF_STATUS_DIR') ?: '/nas/metrics/public_html/security-status/',
     'wordfence_stale_days' => 8,   // note when the last scan is older than this
 
     // A header row (e.g. "filename,signature_id,...") is detected automatically.
     // Set true only if your header row isn't detected.
     'wordfence_csv_has_header' => false,
 
-    // Column labels used when the CSVs have no header row (Wordfence CLI's default column order).
+    // Column labels for old Wordfence CLI reports without a header row (security-scan.sh writes headers).
     // If a report has a different number of columns, generic "Column N" labels are shown instead.
     'wordfence_malware_columns' => ['File', 'Signature ID', 'Signature', 'Description', 'Matched text'],
     'wordfence_vuln_columns'    => ['Type', 'Slug', 'Version', 'Vulnerability ID', 'Title', 'Link'],
