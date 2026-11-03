@@ -399,7 +399,11 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
                 <?php if ($wf['scanned_at']): ?>Last scanned <?= h(human_age(time() - $wf['scanned_at'])) ?> <span class="t-faint">(<?= h(date('j M Y, H:i', $wf['scanned_at'])) ?>)</span><?php endif; ?>
             </p>
             <?php foreach ($wf['failed'] as $k => $msg): $st = $wf['status'][$k] ?? []; ?>
-                <p><?= dot('warning', $msg) ?> <span class="t-muted ms-2">Showing the previous report<?= isset($st['exit_code']) ? ' (exit code ' . (int) $st['exit_code'] . ')' : '' ?>.</span></p>
+                <?php $newScanner = ($wf['status']['scanner'] ?? '') === 'security-scan';
+                    $note = ($k === 'malware' && $newScanner)
+                        ? 'The other checks below are up to date. Malware results show the previous scan plus anything found before ClamAV stopped.'
+                        : 'Showing the previous report' . (isset($st['exit_code']) ? ' (exit code ' . (int) $st['exit_code'] . ')' : '') . '.'; ?>
+                <p><?= dot('warning', $k === 'malware' && $newScanner ? 'ClamAV malware scan ' . (($st['state'] ?? '') === 'timeout' ? 'timed out' : 'failed') : $msg) ?> <span class="t-muted ms-2"><?= h($note) ?></span></p>
                 <?php if (!empty($st['log'])): ?><pre class="code mono"><?= h($st['log']) ?></pre><?php endif; ?>
             <?php endforeach; ?>
 

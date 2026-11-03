@@ -105,7 +105,11 @@ tar xzf maldetect-current.tar.gz && cd maldetect-*/ && sudo ./install.sh   # ins
 sudo maldet -u                                    # fetch the latest maldet signatures now
 ```
 
-ClamAV needs roughly 1-1.5 GB of free RAM while it loads signatures. Without ClamAV installed the
+ClamAV needs roughly 1-1.5 GB of free RAM while it loads signatures. To keep it fast, ClamAV only scans file types malware
+lives in (`CLAM_INCLUDE`: PHP, JS, HTML, `.htaccess`, ...), does not open archives, and skips cache and backup
+folders (`SKIP_DIR_NAMES`: `cache`, `updraft`, `ai1wm-backups`, ...). If ClamAV still hits `CLAM_TIMEOUT`, the
+other checks are published as normal and the malware section keeps the previous detections plus anything found
+before it stopped. Use `--no-malware` to skip ClamAV entirely. Without ClamAV installed the
 script still runs the vulnerability and checksum checks.
 
 The malware scan skips media in `wp-content/uploads` (the slow part) but still scans PHP and other

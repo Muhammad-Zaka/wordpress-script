@@ -124,7 +124,7 @@ function load_wordfence(string $slug, array $config): array
             $result['status'] = $st;
             $result['malware_skipped'] = ($st['malware']['clamav'] ?? '') === 'skipped';
             foreach (['malware' => 'Malware scan', 'vuln' => 'Vulnerability scan'] as $k => $label) {
-                if (($st[$k]['state'] ?? 'ok') !== 'ok') $result['failed'][$k] = $label . ' ' . ($st[$k]['state'] === 'timeout' ? 'timed out' : 'failed');
+                if (($st[$k]['state'] ?? 'ok') !== 'ok') $result['failed'][$k] = ($k === 'malware' && ($st['scanner'] ?? '') === 'security-scan' ? 'ClamAV malware scan' : $label) . ' ' . ($st[$k]['state'] === 'timeout' ? 'timed out' : 'failed');
             }
         }
     }

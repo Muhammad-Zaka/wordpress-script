@@ -28,7 +28,7 @@
 
 set -uo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -59,7 +59,11 @@ CLAMSCAN="clamscan"
 CLAM_DB_DIR="/var/lib/clamav"           # ClamAV's own signatures (kept fresh by freshclam)
 MALDET_SIGS_DIR="/usr/local/maldetect/sigs"   # Linux Malware Detect signatures (much better for PHP web shells)
 CLAM_TIMEOUT=14400                      # one scan for all sites
-CLAM_OPTS=(--recursive --infected --no-summary --max-filesize=25M --max-scansize=100M)
+CLAM_OPTS=(--recursive --infected --no-summary --scan-archive=no --max-filesize=10M --max-scansize=20M)
+# Only scan file types that malware lives in (regex on the file name). Empty = scan every file (much slower).
+CLAM_INCLUDE='\.(php[0-9]?|phtml|pht|phar|inc|js|html?|htaccess|user\.ini|svg|ico|sh|pl|py|cgi)$'
+# Folders skipped by ClamAV and the code checks: caches and backup plugins' archives (huge, not executable)
+SKIP_DIR_NAMES=(cache updraft ai1wm-backups wpvividbackups backup backups backup-db 'backwpup-*' node_modules .git)
 
 # What the malware scan does with wp-content/uploads
 #   php-only  skip media, but scan PHP/script files hidden in uploads (default)
@@ -402,6 +406,10 @@ for VHOST_DIR in "${DIRS[@]}"; do
     add_row() { is_ignored "$WEB_ROOT" "$2" && return 0; printf '%s,%s,%s\n' "$1" "$(csv_field "$2")" "$(csv_field "$3")" >> "$MAL_OUT"; }
     rel() { printf '%s' "${1#"$WEB_ROOT/"}"; }
 
+    GREP_SKIP=(); FIND_SKIP=()
+    for N in "${SKIP_DIR_NAMES[@]}"; do GREP_SKIP+=(--exclude-dir="$N"); FIND_SKIP+=(-name "$N" -o); done
+    unset 'FIND_SKIP[${#FIND_SKIP[@]}-1]'
+
     # --- Suspicious code patterns ---
     : > "$WORK/pat"
     for ENTRY in "${SUSPICIOUS_PATTERNS[@]}"; do
@@ -409,7 +417,7 @@ for VHOST_DIR in "${DIRS[@]}"; do
         {
             [[ ${#SCAN_DIRS[@]} -gt 0 ]] && timeout "$PATTERN_TIMEOUT" grep -rnoIP -m 3 \
                 --include='*.php' --include='*.php[0-9]' --include='*.phtml' --include='*.inc' \
-                --exclude-dir=cache -e "$RE" -- "${SCAN_DIRS[@]}" 2>/dev/null
+                "${GREP_SKIP[@]}" -e "$RE" -- "${SCAN_DIRS[@]}" 2>/dev/null
             [[ ${#SCAN_FILES[@]} -gt 0 ]] && timeout "$PATTERN_TIMEOUT" grep -noIP -m 3 -H -e "$RE" -- "${SCAN_FILES[@]}" 2>/dev/null
         } | while IFS= read -r LINE; do
             [[ "$LINE" =~ ^([^:]+):([0-9]+):(.*)$ ]] || continue
@@ -420,7 +428,7 @@ for VHOST_DIR in "${DIRS[@]}"; do
     N=$(sort -u "$WORK/pat" | wc -l); [[ $N -gt $LIST_LIMIT ]] && add_row pattern "(more)" "$((N - LIST_LIMIT)) more matches not listed"
 
     # --- Recently changed PHP files (information only, never alerts) ---
-    find "${SCAN_PATHS[@]}" -path '*/cache/*' -prune -o -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \) \
+    find "${SCAN_PATHS[@]}" -type d \( "${FIND_SKIP[@]}" \) -prune -o -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \) \
         -mtime -"$RECENT_DAYS" -printf '%T@\t%p\n' 2>/dev/null | sort -rn > "$WORK/recent"
     head -n "$LIST_LIMIT" "$WORK/recent" | while IFS=$'\t' read -r T F; do
         add_row recent "$(rel "$F")" "Changed $(date -d "@${T%.*}" '+%Y-%m-%d %H:%M')"
@@ -523,7 +531,11 @@ if [[ $MALWARE -eq 1 && -s "$WORK/clam-targets" ]]; then
     tr '\0' '\n' < "$WORK/clam-targets" > "$WORK/clam-list"
     log "Malware scan: $(wc -l < "$WORK/clam-list") paths across ${#SITES[@]} site(s)"
     START=$(date +%s)
-    timeout "$CLAM_TIMEOUT" "$CLAMSCAN" "${CLAM_OPTS[@]}" "${DB_ARGS[@]}" --file-list="$WORK/clam-list" \
+    FILTER_ARGS=()
+    [[ -n "$CLAM_INCLUDE" ]] && FILTER_ARGS+=(--include="$CLAM_INCLUDE")
+    SKIP_RE=$(printf '%s|' "${SKIP_DIR_NAMES[@]}" | sed -e 's/|$//' -e 's/\./\\./g' -e 's/\*/[^\/]*/g')
+    FILTER_ARGS+=(--exclude-dir="/(${SKIP_RE})(/|$)")
+    timeout "$CLAM_TIMEOUT" "$CLAMSCAN" "${CLAM_OPTS[@]}" "${FILTER_ARGS[@]}" "${DB_ARGS[@]}" --file-list="$WORK/clam-list" \
         > "$WORK/clam.out" 2> "$WORK/clam.err"
     CODE=$?
     CLAM_SECS=$(( $(date +%s) - START ))
@@ -559,7 +571,13 @@ for VHOST in "${SITES[@]}"; do
     MAL_OUT="$WORK/$VHOST-malware.csv"
     VULN_OUT="$WORK/$VHOST-vuln.csv"
     if [[ $MALWARE -eq 1 && "$CLAM_STATE" != "ok" ]]; then
-        MAL_STATE[$VHOST]="$CLAM_STATE"; MAL_ERR[$VHOST]="ClamAV: $(tail -c 300 "$WORK/clam.err" 2>/dev/null)"
+        MAL_STATE[$VHOST]="$CLAM_STATE"
+        MAL_ERR[$VHOST]="ClamAV $([[ $CLAM_STATE == timeout ]] && echo "stopped after ${CLAM_TIMEOUT}s" || echo failed): $(tail -c 250 "$WORK/clam.err" 2>/dev/null)"
+        # ClamAV didn't finish: keep the previous run's malware detections alongside anything found this time
+        if [[ -f "$MALWARE_REPORT_DIR/$VHOST.csv" ]]; then
+            { grep '^malware,' "$MALWARE_REPORT_DIR/$VHOST.csv"; grep '^malware,' "$MAL_OUT"; } | sort -u > "$WORK/mal-merge"
+            grep -v '^malware,' "$MAL_OUT" > "$WORK/mal-rest"; cat "$WORK/mal-rest" "$WORK/mal-merge" > "$MAL_OUT"
+        fi
     fi
 
     MALWARE_HITS=$(grep -c '^malware,' "$MAL_OUT")
@@ -574,8 +592,8 @@ for VHOST in "${SITES[@]}"; do
     [[ "$(fingerprint "$MAL_OUT")" != "$(fingerprint "$MALWARE_REPORT_DIR/$VHOST.csv")" ]] && MAL_CHANGED=1
     [[ "$(fingerprint "$VULN_OUT")" != "$(fingerprint "$VULN_REPORT_DIR/$VHOST.csv")" ]] && VULN_CHANGED=1
 
-    # A failed check keeps the previous report rather than showing "clean"
-    [[ "${MAL_STATE[$VHOST]}" == "ok" ]] && publish "$MAL_OUT" "$MALWARE_REPORT_DIR/$VHOST.csv"
+    # Always publish: the other checks are current. If ClamAV failed, its rows were carried over above.
+    publish "$MAL_OUT" "$MALWARE_REPORT_DIR/$VHOST.csv"
     [[ "${VULN_STATE[$VHOST]}" != "error" ]] && publish "$VULN_OUT" "$VULN_REPORT_DIR/$VHOST.csv"
 
     install -d -m 0750 "$HISTORY_DIR/$VHOST"
