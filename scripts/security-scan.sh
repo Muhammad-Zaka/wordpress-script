@@ -75,6 +75,11 @@ ADMIN_NEW_DAYS=30                       # flag administrator accounts this new
 KEYFILE_CHANGE_DAYS=7                   # flag wp-config.php/.htaccess changes for this many days
 RECENT_DAYS=3                           # list PHP files changed in the last N days (information only)
 LIST_LIMIT=50                           # max rows per check per site
+# Never report these, in any check. Globs relative to the site's public_html (e.g. 'wp-content/cache/*').
+IGNORE_FILES=(
+    'wp-admin/cookie.txt'
+)
+IGNORE_SILENCE_IS_GOLDEN=1              # skip placeholder index.php files ("Silence is golden")
 PATTERN_TIMEOUT=900                     # seconds for the suspicious-code search per site
 # Options skipped by the database check (regex on option_name): caches that legitimately hold JS
 DB_IGNORE_OPTIONS='^(_site)?_transient_|^rocket_|^wpseo|^elementor_|_cache$'
@@ -302,6 +307,27 @@ malware_targets() {
     fi
 }
 
+# is_ignored ROOT LOCATION -> 0 if a finding at this location should not be reported
+is_ignored() {
+    local root="${1%/}" loc="$2" g f
+    loc="${loc%%:[0-9]*}"                       # "file.php:12" -> "file.php"
+    loc="${loc%/}"
+    for g in "${IGNORE_FILES[@]}"; do
+        # shellcheck disable=SC2053
+        [[ "$loc" == $g ]] && return 0
+    done
+    if [[ "$IGNORE_SILENCE_IS_GOLDEN" == "1" && "${loc##*/}" == "index.php" ]]; then
+        f="$root/$loc"
+        # Only a pure placeholder: once PHP comments/whitespace are stripped, no code may remain
+        # (attackers often append backdoors to "Silence is golden" files)
+        if [[ -f "$f" && $(stat -c %s "$f" 2>/dev/null || echo 9999) -le 1024 ]] && grep -qi 'silence is golden' "$f" 2>/dev/null; then
+            local code; code=$(php -w "$f" 2>/dev/null | tr -d '[:space:]')
+            [[ -z "$code" || "$code" == "<?php" || "$code" == "<?php?>" ]] && return 0
+        fi
+    fi
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Phase 1: per site - vulnerabilities and checksums
 # ---------------------------------------------------------------------------
@@ -354,11 +380,13 @@ for VHOST_DIR in "${DIRS[@]}"; do
     MAL_STATE[$VHOST]="ok"; MAL_ERR[$VHOST]=""
     wp core verify-checksums 2>&1 >/dev/null | sed -n 's/^Warning: \(File .*\): \(.*\)$/\1\t\2/p' |
         while IFS=$'\t' read -r MSG FILE; do
+            is_ignored "$WEB_ROOT" "$FILE" && continue
             printf 'checksum,%s,%s\n' "$(csv_field "$FILE")" "$(csv_field "Core: $MSG")" >> "$MAL_OUT"
         done
     wp plugin verify-checksums --all --format=json 2>/dev/null |
         jq -r '.[]? | [.plugin_name, .file, .message] | @tsv' 2>/dev/null |
         while IFS=$'\t' read -r PL FILE MSG; do
+            is_ignored "$WEB_ROOT" "wp-content/plugins/$PL/$FILE" && continue
             printf 'checksum,%s,%s\n' "$(csv_field "wp-content/plugins/$PL/$FILE")" "$(csv_field "Plugin $PL: $MSG")" >> "$MAL_OUT"
         done
 
@@ -371,7 +399,7 @@ for VHOST_DIR in "${DIRS[@]}"; do
     fi
     STATE="$STATE_DIR/$VHOST"; install -d -m 0700 "$STATE"
     NOW=$(date +%s)
-    add_row() { printf '%s,%s,%s\n' "$1" "$(csv_field "$2")" "$(csv_field "$3")" >> "$MAL_OUT"; }
+    add_row() { is_ignored "$WEB_ROOT" "$2" && return 0; printf '%s,%s,%s\n' "$1" "$(csv_field "$2")" "$(csv_field "$3")" >> "$MAL_OUT"; }
     rel() { printf '%s' "${1#"$WEB_ROOT/"}"; }
 
     # --- Suspicious code patterns ---
@@ -448,7 +476,7 @@ for VHOST_DIR in "${DIRS[@]}"; do
     if [[ -d "$UP" ]]; then
         find -H "$UP" -type f \( -iname '*.php*' -o -iname '*.phtml' -o -iname '*.phar' \) 2>/dev/null |
             while IFS= read -r F; do
-                [[ "$(basename "$F")" == "index.php" ]] && grep -qi 'silence is golden' "$F" 2>/dev/null && continue
+                is_ignored "$WEB_ROOT" "$(rel "$F")" && continue
                 echo "$F"
             done | head -n "$LIST_LIMIT" | while IFS= read -r F; do add_row audit "$(rel "$F")" "PHP file in uploads"; done
     fi
@@ -512,7 +540,8 @@ if [[ $MALWARE -eq 1 && -s "$WORK/clam-targets" ]]; then
         for VHOST in "${SITES[@]}"; do
             ROOT="/home/$VHOST/public_html/"
             if [[ "$PATH_HIT" == "$ROOT"* ]]; then
-                printf 'malware,%s,%s\n' "$(csv_field "${PATH_HIT#"$ROOT"}")" "$(csv_field "$SIG")" >> "$WORK/$VHOST-malware.csv"
+                is_ignored "$ROOT" "${PATH_HIT#"$ROOT"}" || \
+                    printf 'malware,%s,%s\n' "$(csv_field "${PATH_HIT#"$ROOT"}")" "$(csv_field "$SIG")" >> "$WORK/$VHOST-malware.csv"
                 break
             fi
         done

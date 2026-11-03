@@ -80,6 +80,11 @@ Additional checks (all in the same run and report):
 | Audit | administrators added since the first scan (or registered in the last 30 days), open registration with an admin/editor default role, `siteurl`/`home` pointing elsewhere, PHP files in uploads, world-writable files, backups/logs/`.git`/`.env` in the web root, changes to `wp-config.php` / `.htaccess` / `.user.ini` |
 | Recently changed | PHP files changed in the last 3 days, for review only (never alerts) |
 
+To silence known-harmless files in every check, add them to `IGNORE_FILES` at the top of the script
+(globs relative to `public_html`, e.g. `wp-admin/cookie.txt`). Placeholder `index.php` files that only
+contain a "Silence is golden" comment are ignored automatically; if such a file contains any code it is
+still reported.
+
 Baselines for admins and key file hashes are kept in `/nas/metrics/public_html/security-scans/<vhost>/` (root-only, `0700`, so the web server cannot serve them). The first run
 records the baseline; later runs flag what changed.
 
