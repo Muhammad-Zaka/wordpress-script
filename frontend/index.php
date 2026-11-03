@@ -13,7 +13,7 @@ $n = ['all' => count($sites), 'danger' => 0, 'warning' => 0, 'ok' => 0, 'updates
 foreach ($sites as $s) {
     $n[$s['_worst']]++;
     if ($s['_needs_update'])        $n['updates']++;
-    if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0 || $s['_wf']['modified_count'] > 0) $n['wordfence']++;
+    if ($s['_wf']['total'] > 0) $n['wordfence']++;
     if ($s['_cf']['failed_checks']) $n['drift']++;
     if ($s['_stale'])               $n['stale']++;
     if (!empty($s['cloudflare']['is_pro_or_higher'])) $n['pro']++; elseif ($s['_has_cf']) $n['free']++;
@@ -129,7 +129,7 @@ page_header('Fleet health');
                 usort($issues, fn($a, $b) => ($a['level'] === 'danger' ? 0 : 1) <=> ($b['level'] === 'danger' ? 0 : 1));
                 $tags = [$s['_worst']];
                 if ($s['_needs_update'])        $tags[] = 'updates';
-                if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0 || $s['_wf']['modified_count'] > 0) $tags[] = 'wordfence';
+                if ($s['_wf']['total'] > 0) $tags[] = 'wordfence';
                 if ($cf['failed_checks'])       $tags[] = 'drift';
                 if ($s['_stale'])               $tags[] = 'stale';
                 if (!empty($s['cloudflare']['is_pro_or_higher'])) $tags[] = 'pro';
@@ -185,7 +185,10 @@ page_header('Fleet health');
                     $wfx = $s['_wf'];
                     $parts = array_filter([
                         $wfx['issues'] ? ['danger', plural($wfx['issues'], 'malware file')] : null,
+                        $wfx['db_count'] ? ['danger', plural($wfx['db_count'], 'database hit')] : null,
+                        $wfx['pattern_count'] ? ['warning', plural($wfx['pattern_count'], 'suspicious code match')] : null,
                         $wfx['modified_count'] ? ['warning', plural($wfx['modified_count'], 'modified file')] : null,
+                        $wfx['audit_count'] ? ['warning', plural($wfx['audit_count'], 'audit finding')] : null,
                         $wfx['vulns'] ? ['warning', $wfx['vulns'] === 1 ? '1 vulnerability' : $wfx['vulns'] . ' vulnerabilities'] : null,
                     ]);
                     ?>

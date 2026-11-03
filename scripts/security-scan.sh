@@ -8,6 +8,11 @@
 #                    free WPVulnerability database (https://www.wpvulnerability.net)
 #   Modified files   WP-CLI checksums: core files and wordpress.org plugins compared with the originals
 #   Malware          ClamAV with Linux Malware Detect (maldet) signatures, one scan for all sites
+#   Database         posts/options searched for injected scripts, hidden iframes and hidden links
+#   Suspicious code  PHP using obfuscation/backdoor patterns (eval of decoded data, request-driven calls, ...)
+#   Audit            new admins, open registration, site address changes, PHP in uploads, world-writable
+#                    files, exposed backups/logs, wp-config.php/.htaccess changes
+#   Recent changes   PHP files changed in the last few days (information only)
 #
 # Reports go to the same folders the dashboard reads, with Slack alerts when findings change.
 #
@@ -23,7 +28,7 @@
 
 set -uo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -63,6 +68,25 @@ CLAM_OPTS=(--recursive --infected --no-summary --max-filesize=25M --max-scansize
 UPLOADS_MODE="php-only"
 
 WP_TIMEOUT=300
+
+# Extra checks
+STATE_DIR="/var/lib/security-scan"      # baselines: admin accounts, key file hashes
+ADMIN_NEW_DAYS=30                       # flag administrator accounts this new
+KEYFILE_CHANGE_DAYS=7                   # flag wp-config.php/.htaccess changes for this many days
+RECENT_DAYS=3                           # list PHP files changed in the last N days (information only)
+LIST_LIMIT=50                           # max rows per check per site
+PATTERN_TIMEOUT=900                     # seconds for the suspicious-code search per site
+# Options skipped by the database check (regex on option_name): caches that legitimately hold JS
+DB_IGNORE_OPTIONS='^(_site)?_transient_|^rocket_|^wpseo|^elementor_|_cache$'
+# Suspicious PHP patterns: "label::PCRE"
+SUSPICIOUS_PATTERNS=(
+    'eval of decoded data::eval\s*\(\s*(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|rawurldecode|hex2bin)\s*\('
+    'nested decoding::(base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(\s*(base64_decode|gzinflate|gzuncompress|str_rot13|strrev)\s*\('
+    'code run from request data::\b(eval|assert|system|exec|shell_exec|passthru|popen|proc_open)\s*\(\s*(stripslashes\s*\(\s*)?\$_(POST|GET|REQUEST|COOKIE|SERVER)'
+    'function name taken from request::\$_(POST|GET|REQUEST|COOKIE)\s*\[[^\]]{1,40}\]\s*\('
+    'include of a non-PHP file::\b(include|require)(_once)?\s*\(?\s*['"'"'"][^'"'"'"]+\.(ico|png|jpe?g|gif|txt|css|svg)['"'"'"]'
+    'long hex-escaped string::(\\x[0-9a-fA-F]{2}){40,}'
+)
 
 # ---------------------------------------------------------------------------
 # Arguments / setup
@@ -105,7 +129,7 @@ if [[ $SLACK -eq 1 && -z "$slack_webhook_url" && ( -z "$slack_bot_token" || -z "
     SLACK=0
 fi
 
-for d in "$MALWARE_REPORT_DIR" "$VULN_REPORT_DIR" "$STATUS_DIR" "$HISTORY_DIR" "$VULN_CACHE_DIR"; do
+for d in "$MALWARE_REPORT_DIR" "$VULN_REPORT_DIR" "$STATUS_DIR" "$HISTORY_DIR" "$VULN_CACHE_DIR" "$STATE_DIR"; do
     install -d -m 0755 "$d"
 done
 
@@ -162,7 +186,8 @@ slack_files() {
 # ---------------------------------------------------------------------------
 # Rows excluding the header line
 count_rows() { [[ -s "$1" ]] && { tail -n +2 "$1" | grep -c '[^[:space:]]'; } || echo 0; }
-fingerprint() { [[ -s "$1" ]] && tail -n +2 "$1" | sort | md5sum | cut -d' ' -f1 || echo "empty"; }
+# "recent" rows are information only, so they don't count as a change worth alerting on
+fingerprint() { [[ -s "$1" ]] && tail -n +2 "$1" | grep -v '^recent,' | sort | md5sum | cut -d' ' -f1 || echo "empty"; }
 
 publish() {
     local src="$1" dest="$2" tmp
@@ -224,6 +249,44 @@ foreach (file($argv[1], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
 }
 PHP
 
+# PHP evaluated in each site (plugins/themes not loaded): database injection search + admin/settings audit.
+read -r -d '' AUDIT_PHP <<'PHP'
+global $wpdb;
+$limit = 5000;
+$re = '~(eval\s*\(|atob\s*\(|String\.fromCharCode|base64_decode|gzinflate|unescape\s*\(|document\.write\s*\(\s*unescape|<iframe[^>]*(display\s*:\s*none|visibility\s*:\s*hidden|width\s*=\s*["\']?0["\'\s>]|height\s*=\s*["\']?0["\'\s>])|<div[^>]*display\s*:\s*none[^>]*>\s*<a\s)~i';
+$likes = ['eval(', 'atob(', 'fromCharCode', 'base64_decode', 'gzinflate', 'unescape(', '<iframe', 'display:none', 'display: none'];
+$where = function ($col) use ($wpdb, $likes) {
+    return '(' . implode(' OR ', array_map(fn($l) => "$col LIKE '%" . esc_sql($wpdb->esc_like($l)) . "%'", $likes)) . ')';
+};
+$snip = function ($text, $m) {
+    $pos = stripos($text, $m);
+    $s = substr($text, max(0, $pos - 30), 140);
+    return trim(preg_replace('/\s+/', ' ', $s));
+};
+$out = ['db' => [], 'admins' => [],
+        'siteurl' => get_option('siteurl'), 'home' => get_option('home'),
+        'users_can_register' => (int) get_option('users_can_register'), 'default_role' => (string) get_option('default_role')];
+$rows = $wpdb->get_results("SELECT ID, post_type, post_status, post_title, post_content FROM {$wpdb->posts}
+    WHERE post_type NOT IN ('revision','nav_menu_item') AND " . $where('post_content') . " LIMIT $limit");
+foreach ((array) $rows as $r) {
+    if (preg_match($re, $r->post_content, $m)) {
+        $out['db'][] = ['where' => "post #{$r->ID} ({$r->post_type}, {$r->post_status}): " . mb_substr($r->post_title, 0, 60),
+                        'detail' => 'Suspicious content: ' . $snip($r->post_content, $m[0])];
+    }
+}
+$rows = $wpdb->get_results("SELECT option_name, option_value FROM {$wpdb->options} WHERE " . $where('option_value') . " LIMIT $limit");
+foreach ((array) $rows as $r) {
+    if (preg_match('~__IGNORE__~', $r->option_name)) continue;
+    if (preg_match($re, $r->option_value, $m)) {
+        $out['db'][] = ['where' => "option {$r->option_name}", 'detail' => 'Suspicious content: ' . $snip($r->option_value, $m[0])];
+    }
+}
+foreach (get_users(['role' => 'administrator', 'fields' => ['user_login', 'user_email', 'user_registered']]) as $u) {
+    $out['admins'][] = ['login' => $u->user_login, 'email' => $u->user_email, 'registered' => $u->user_registered];
+}
+echo "\n__SEC__" . wp_json_encode($out);
+PHP
+
 # Paths for the malware scan (NUL-separated), leaving out wp-content/uploads according to UPLOADS_MODE
 malware_targets() {
     local root="$1" uploads="$1/wp-content/uploads"
@@ -247,7 +310,7 @@ else
 fi
 
 SITES=()
-declare -A VULN_STATE VULN_ERR MAL_STATE MAL_ERR
+declare -A VULN_STATE VULN_ERR MAL_STATE MAL_ERR EXTRA_ERR DOMAIN_FOR_SITE
 MAL_HEADER="source,file,detection"
 VULN_HEADER="type,slug,installed_version,vulnerability,severity,fixed_in,link"
 
@@ -258,6 +321,10 @@ for VHOST_DIR in "${DIRS[@]}"; do
     [[ -f "$WEB_ROOT/wp-config.php" ]] || { log "Skipping non-WordPress vhost: $VHOST"; continue; }
     SITES+=("$VHOST")
     log "Checking $VHOST"
+    EXTRA_ERR[$VHOST]=""
+    D=$(grep -E '^\s*vhAliases\s+' "$VHOST_DIR/vhconf.conf" | head -n 1 | sed -E 's/^[[:space:]]*vhAliases[[:space:]]+//' \
+        | tr ',' '\n' | tr -d ' \t"\r' | grep -v -e '^$' -e '^\*$' -e '\$' | head -n 1)
+    D="${D#www.}"; DOMAIN_FOR_SITE[$VHOST]="$D"
 
     # Never load plugins/themes while inspecting a possibly infected site
     wp() { timeout "$WP_TIMEOUT" sudo -u "$VHOST" "$WP_CLI" --path="$WEB_ROOT" --no-color --skip-plugins --skip-themes "$@"; }
@@ -293,10 +360,121 @@ for VHOST_DIR in "${DIRS[@]}"; do
             printf 'checksum,%s,%s\n' "$(csv_field "wp-content/plugins/$PL/$FILE")" "$(csv_field "Plugin $PL: $MSG")" >> "$MAL_OUT"
         done
 
-    # Targets for the shared malware scan
+    # Paths to inspect (same rules as the malware scan for uploads)
+    mapfile -d '' SCAN_PATHS < <(malware_targets "$WEB_ROOT")
+    SCAN_DIRS=() SCAN_FILES=()
+    for P in "${SCAN_PATHS[@]}"; do [[ -d "$P" ]] && SCAN_DIRS+=("$P") || SCAN_FILES+=("$P"); done
     if [[ $MALWARE -eq 1 ]]; then
-        malware_targets "$WEB_ROOT" >> "$WORK/clam-targets"
+        printf '%s\0' "${SCAN_PATHS[@]}" >> "$WORK/clam-targets"
     fi
+    STATE="$STATE_DIR/$VHOST"; install -d -m 0700 "$STATE"
+    NOW=$(date +%s)
+    add_row() { printf '%s,%s,%s\n' "$1" "$(csv_field "$2")" "$(csv_field "$3")" >> "$MAL_OUT"; }
+    rel() { printf '%s' "${1#"$WEB_ROOT/"}"; }
+
+    # --- Suspicious code patterns ---
+    : > "$WORK/pat"
+    for ENTRY in "${SUSPICIOUS_PATTERNS[@]}"; do
+        LABEL="${ENTRY%%::*}" RE="${ENTRY#*::}"
+        {
+            [[ ${#SCAN_DIRS[@]} -gt 0 ]] && timeout "$PATTERN_TIMEOUT" grep -rnoIP -m 3 \
+                --include='*.php' --include='*.php[0-9]' --include='*.phtml' --include='*.inc' \
+                --exclude-dir=cache -e "$RE" -- "${SCAN_DIRS[@]}" 2>/dev/null
+            [[ ${#SCAN_FILES[@]} -gt 0 ]] && timeout "$PATTERN_TIMEOUT" grep -noIP -m 3 -H -e "$RE" -- "${SCAN_FILES[@]}" 2>/dev/null
+        } | while IFS= read -r LINE; do
+            [[ "$LINE" =~ ^([^:]+):([0-9]+):(.*)$ ]] || continue
+            printf '%s\t%s\n' "$(rel "${BASH_REMATCH[1]}"):${BASH_REMATCH[2]}" "$LABEL: ${BASH_REMATCH[3]:0:100}"
+        done >> "$WORK/pat"
+    done
+    sort -u "$WORK/pat" | head -n "$LIST_LIMIT" | while IFS=$'\t' read -r F D; do add_row pattern "$F" "$D"; done
+    N=$(sort -u "$WORK/pat" | wc -l); [[ $N -gt $LIST_LIMIT ]] && add_row pattern "(more)" "$((N - LIST_LIMIT)) more matches not listed"
+
+    # --- Recently changed PHP files (information only, never alerts) ---
+    find "${SCAN_PATHS[@]}" -path '*/cache/*' -prune -o -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \) \
+        -mtime -"$RECENT_DAYS" -printf '%T@\t%p\n' 2>/dev/null | sort -rn > "$WORK/recent"
+    head -n "$LIST_LIMIT" "$WORK/recent" | while IFS=$'\t' read -r T F; do
+        add_row recent "$(rel "$F")" "Changed $(date -d "@${T%.*}" '+%Y-%m-%d %H:%M')"
+    done
+    N=$(wc -l < "$WORK/recent"); [[ $N -gt $LIST_LIMIT ]] && add_row recent "(more)" "$((N - LIST_LIMIT)) more files changed"
+
+    # --- Database + admin/settings audit (one WP-CLI call) ---
+    AUDIT_OUT=$(wp eval "${AUDIT_PHP//__IGNORE__/$DB_IGNORE_OPTIONS}" 2>"$WORK/err")
+    AUDIT=$(grep -o '__SEC__.*' <<< "$AUDIT_OUT" | tail -n 1 | sed 's/^__SEC__//')
+    if jq -e 'type == "object"' <<< "$AUDIT" >/dev/null 2>&1; then
+        jq -r --argjson n "$LIST_LIMIT" '.db[:$n][] | [.where, .detail] | @tsv' <<< "$AUDIT" |
+            while IFS=$'\t' read -r W D; do add_row database "$W" "$D"; done
+        N=$(jq '.db | length' <<< "$AUDIT"); [[ $N -gt $LIST_LIMIT ]] && add_row database "(more)" "$((N - LIST_LIMIT)) more not listed"
+
+        # Administrators: flagged when added after the first scan (first_seen > 0) or registered recently.
+        # Accounts present on the first scan form the baseline (first_seen = 0). Wording stays the same
+        # between runs so an unchanged situation doesn't re-alert.
+        BASE="$STATE/admins.tsv"; NEWBASE="$WORK/admins.tsv"; : > "$NEWBASE"
+        while IFS=$'\t' read -r LOGIN EMAIL REG; do
+            FIRST=$(awk -F'\t' -v l="$LOGIN" '$1 == l {print $3}' "$BASE" 2>/dev/null)
+            if [[ -z "$FIRST" ]]; then
+                [[ -f "$BASE" ]] && FIRST=$NOW || FIRST=0
+            fi
+            REG_TS=$(date -d "$REG" +%s 2>/dev/null || echo 0)
+            if [[ "$FIRST" != "0" && $((NOW - FIRST)) -lt $((ADMIN_NEW_DAYS * 86400)) ]]; then
+                add_row audit "user $LOGIN" "Administrator added $(date -d "@$FIRST" +%F) ($EMAIL)"
+            elif [[ $((NOW - REG_TS)) -lt $((ADMIN_NEW_DAYS * 86400)) ]]; then
+                add_row audit "user $LOGIN" "Administrator registered recently: ${REG%% *} ($EMAIL)"
+            fi
+            printf '%s\t%s\t%s\n' "$LOGIN" "$EMAIL" "$FIRST" >> "$NEWBASE"
+        done < <(jq -r '.admins[] | [.login, .email, .registered] | @tsv' <<< "$AUDIT")
+        cp "$NEWBASE" "$BASE"
+
+        # Site address hijack and open registration as admin/editor
+        DOM_RE="^https?://(www\.)?${DOMAIN_FOR_SITE[$VHOST]//./\\.}(/|$)"
+        for KEY in siteurl home; do
+            URL=$(jq -r ".$KEY // \"\"" <<< "$AUDIT")
+            [[ -n "${DOMAIN_FOR_SITE[$VHOST]}" && -n "$URL" && ! "$URL" =~ $DOM_RE ]] && add_row audit "option $KEY" "Site address is $URL (expected ${DOMAIN_FOR_SITE[$VHOST]})"
+        done
+        if [[ $(jq -r '.users_can_register' <<< "$AUDIT") == "1" ]]; then
+            ROLE=$(jq -r '.default_role' <<< "$AUDIT")
+            case "$ROLE" in
+                administrator|editor|shop_manager) add_row audit "option default_role" "Anyone can register and becomes '$ROLE'" ;;
+                *) add_row audit "option users_can_register" "Open registration is on (new users get '$ROLE')" ;;
+            esac
+        fi
+    else
+        EXTRA_ERR[$VHOST]="database/admin check failed: $(head -c 200 "$WORK/err" | tr '\n' ' ')"
+    fi
+
+    # --- Files: PHP in uploads, world-writable, exposed backups/logs, key file changes ---
+    UP="$WEB_ROOT/wp-content/uploads"
+    if [[ -d "$UP" ]]; then
+        find -H "$UP" -type f \( -iname '*.php*' -o -iname '*.phtml' -o -iname '*.phar' \) 2>/dev/null |
+            while IFS= read -r F; do
+                [[ "$(basename "$F")" == "index.php" ]] && grep -qi 'silence is golden' "$F" 2>/dev/null && continue
+                echo "$F"
+            done | head -n "$LIST_LIMIT" | while IFS= read -r F; do add_row audit "$(rel "$F")" "PHP file in uploads"; done
+    fi
+    find "$WEB_ROOT" -xdev ! -type l -perm -0002 2>/dev/null | head -n "$LIST_LIMIT" |
+        while IFS= read -r F; do add_row audit "$(rel "$F")" "World-writable ($(stat -c '%a' "$F"))"; done
+    find "$WEB_ROOT" -maxdepth 3 \( -path "$UP" -prune \) -o \( -type f \( -iname '*.sql' -o -iname '*.sql.gz' -o -iname '*.sql.zip' \
+        -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.bak' -o -iname '*.old' -o -iname '*.save' -o -name '*~' \
+        -o -name '.env' -o -iname 'phpinfo.php' -o -iname 'info.php' -o -iname 'adminer*.php' -o -name 'debug.log' -o -name 'error_log' \
+        -o -iname 'wp-config.php.*' \) -print \) -o \( -type d -name '.git' -print -prune \) 2>/dev/null | head -n "$LIST_LIMIT" |
+        while IFS= read -r F; do
+            if [[ -d "$F" ]]; then add_row audit "$(rel "$F")/" "Folder that should not be in the web root (e.g. exposes source history)"
+            else add_row audit "$(rel "$F")" "Sensitive file in the web root ($(du -h "$F" 2>/dev/null | cut -f1))"; fi
+        done
+
+    HASHES="$STATE/keyfiles.tsv"; NEWH="$WORK/keyfiles.tsv"; : > "$NEWH"
+    for KF in wp-config.php .htaccess .user.ini index.php wp-content/.htaccess wp-content/uploads/.htaccess; do
+        [[ -f "$WEB_ROOT/$KF" ]] || continue
+        SUM=$(sha256sum "$WEB_ROOT/$KF" | cut -d' ' -f1)
+        read -r OLDSUM CHANGED < <(awk -F'\t' -v f="$KF" '$1 == f {print $2, $3}' "$HASHES" 2>/dev/null)
+        if [[ -n "${OLDSUM:-}" && "$OLDSUM" != "$SUM" ]]; then CHANGED=$NOW; fi
+        [[ -z "${CHANGED:-}" ]] && CHANGED=0
+        if [[ "$CHANGED" != "0" && $((NOW - CHANGED)) -lt $((KEYFILE_CHANGE_DAYS * 86400)) ]]; then
+            add_row audit "$KF" "Changed since the previous scan (detected $(date -d "@$CHANGED" '+%Y-%m-%d %H:%M'))"
+        fi
+        printf '%s\t%s\t%s\n' "$KF" "$SUM" "$CHANGED" >> "$NEWH"
+        OLDSUM="" CHANGED=""
+    done
+    cp "$NEWH" "$HASHES"
 done
 
 if [[ ${#SITES[@]} -eq 0 ]]; then log "No WordPress sites found."; exit 0; fi
@@ -343,7 +521,7 @@ fi
 # Phase 3: publish reports, status and alerts
 # ---------------------------------------------------------------------------
 TODAY=$(date +%F)
-n_malware=0 n_modified=0 n_vuln=0 n_errors=0
+n_malware=0 n_modified=0 n_vuln=0 n_errors=0 n_suspicious=0 n_audit=0
 SUMMARY_LINES=()
 
 for VHOST in "${SITES[@]}"; do
@@ -355,6 +533,10 @@ for VHOST in "${SITES[@]}"; do
 
     MALWARE_HITS=$(grep -c '^malware,' "$MAL_OUT")
     MODIFIED=$(grep -c '^checksum,' "$MAL_OUT")
+    DBHITS=$(grep -c '^database,' "$MAL_OUT")
+    PATTERNS=$(grep -c '^pattern,' "$MAL_OUT")
+    AUDITS=$(grep -c '^audit,' "$MAL_OUT")
+    RECENT=$(grep -c '^recent,' "$MAL_OUT")
     VULNS=$(count_rows "$VULN_OUT")
 
     MAL_CHANGED=0 VULN_CHANGED=0
@@ -376,33 +558,48 @@ for VHOST in "${SITES[@]}"; do
     jq -n --arg site "$VHOST" --arg at "$(date --iso-8601=seconds)" --arg v "$SCRIPT_VERSION" \
         --arg ms "${MAL_STATE[$VHOST]}" --arg me "${MAL_ERR[$VHOST]}" --argjson mh "$MALWARE_HITS" --argjson mm "$MODIFIED" \
         --arg clam "$CLAM_STATE" --argjson csecs "$CLAM_SECS" --arg up "$UPLOADS_MODE" \
+        --argjson db "$DBHITS" --argjson pat "$PATTERNS" --argjson aud "$AUDITS" --argjson rec "$RECENT" --arg xe "${EXTRA_ERR[$VHOST]}" \
         --arg vs "${VULN_STATE[$VHOST]}" --arg ve "${VULN_ERR[$VHOST]}" --argjson vc "$VULNS" \
         '{site: $site, scanned_at: $at, scanner: "security-scan", script_version: $v,
-          malware: {state: (if $ms == "ok" then "ok" else $ms end), findings: ($mh + $mm), malware: $mh, modified_files: $mm,
+          malware: {state: (if $ms == "ok" then "ok" else $ms end), findings: ($mh + $mm + $db + $pat + $aud), malware: $mh, modified_files: $mm,
+                    database: $db, suspicious_code: $pat, audit: $aud, recently_changed: $rec, checks_log: (if $xe == "" then null else $xe end),
                     clamav: $clam, clamav_seconds: $csecs, uploads_mode: $up, log: (if $me == "" then null else $me end)},
           vuln: {state: (if $vs == "partial" then "ok" else $vs end), findings: $vc, partial: ($vs == "partial"),
                  log: (if $ve == "" then null else $ve end)}}' > "$WORK/status.json" \
         && publish "$WORK/status.json" "$STATUS_DIR/$VHOST.json"
 
-    log "$VHOST: $MALWARE_HITS malware, $MODIFIED modified file(s), $VULNS vulnerabilit$([[ $VULNS -eq 1 ]] && echo y || echo ies)"
+    log "$VHOST: $MALWARE_HITS malware, $MODIFIED modified, $DBHITS database, $PATTERNS suspicious code, $AUDITS audit, $VULNS vulnerabilit$([[ $VULNS -eq 1 ]] && echo y || echo ies) ($RECENT PHP files changed recently)"
+    [[ -n "${EXTRA_ERR[$VHOST]}" ]] && log "    ${EXTRA_ERR[$VHOST]}"
     [[ -n "${VULN_ERR[$VHOST]}" ]] && log "    vulnerabilities: ${VULN_ERR[$VHOST]}"
     [[ -n "${MAL_ERR[$VHOST]}" ]] && log "    malware: ${MAL_ERR[$VHOST]}"
 
     [[ $MALWARE_HITS -gt 0 ]] && n_malware=$((n_malware + 1))
     [[ $MODIFIED -gt 0 ]] && n_modified=$((n_modified + 1))
+    [[ $((DBHITS + PATTERNS)) -gt 0 ]] && n_suspicious=$((n_suspicious + 1))
+    [[ $AUDITS -gt 0 ]] && n_audit=$((n_audit + 1))
     [[ $VULNS -gt 0 ]] && n_vuln=$((n_vuln + 1))
     if [[ "${MAL_STATE[$VHOST]}" != "ok" || "${VULN_STATE[$VHOST]}" == "error" ]]; then
         n_errors=$((n_errors + 1))
         SUMMARY_LINES+=("• $VHOST: check failed - ${VULN_ERR[$VHOST]}${MAL_ERR[$VHOST]:+ ${MAL_ERR[$VHOST]}}")
     fi
-    if [[ $((MALWARE_HITS + MODIFIED + VULNS)) -gt 0 ]]; then
-        SUMMARY_LINES+=("• $VHOST: $MALWARE_HITS malware, $MODIFIED modified file(s), $VULNS vulnerabilit$([[ $VULNS -eq 1 ]] && echo y || echo ies)")
+    if [[ $((MALWARE_HITS + MODIFIED + DBHITS + PATTERNS + AUDITS + VULNS)) -gt 0 ]]; then
+        LINE="• $VHOST:"
+        [[ $MALWARE_HITS -gt 0 ]] && LINE+=" $MALWARE_HITS malware,"
+        [[ $MODIFIED -gt 0 ]] && LINE+=" $MODIFIED modified,"
+        [[ $DBHITS -gt 0 ]] && LINE+=" $DBHITS database,"
+        [[ $PATTERNS -gt 0 ]] && LINE+=" $PATTERNS suspicious code,"
+        [[ $AUDITS -gt 0 ]] && LINE+=" $AUDITS audit,"
+        [[ $VULNS -gt 0 ]] && LINE+=" $VULNS vulnerabilit$([[ $VULNS -eq 1 ]] && echo y || echo ies),"
+        SUMMARY_LINES+=("${LINE%,}")
     fi
 
     PARTS=() ATTACH=()
-    if [[ $((MALWARE_HITS + MODIFIED)) -gt 0 && ( $MAL_CHANGED -eq 1 || $NOTIFY_ALL -eq 1 ) ]]; then
+    if [[ $((MALWARE_HITS + MODIFIED + DBHITS + PATTERNS + AUDITS)) -gt 0 && ( $MAL_CHANGED -eq 1 || $NOTIFY_ALL -eq 1 ) ]]; then
         [[ $MALWARE_HITS -gt 0 ]] && PARTS+=(":rotating_light: *$MALWARE_HITS malware detection(s)*")
+        [[ $DBHITS -gt 0 ]] && PARTS+=(":rotating_light: *$DBHITS suspicious item(s) in the database* (injected scripts/hidden links)")
+        [[ $PATTERNS -gt 0 ]] && PARTS+=(":mag: *$PATTERNS suspicious code pattern(s)* (obfuscated or backdoor-like PHP)")
         [[ $MODIFIED -gt 0 ]] && PARTS+=(":mag: *$MODIFIED file(s) differ from the official WordPress/plugin versions*")
+        [[ $AUDITS -gt 0 ]] && PARTS+=(":clipboard: *$AUDITS audit finding(s)* (admins, permissions, exposed files, settings)")
         cp "$MAL_OUT" "$WORK/$VHOST-malware-scan.csv"; ATTACH+=("$WORK/$VHOST-malware-scan.csv")
     fi
     if [[ $VULNS -gt 0 && ( $VULN_CHANGED -eq 1 || $NOTIFY_ALL -eq 1 ) ]]; then
@@ -417,7 +614,7 @@ done
 
 find "$HISTORY_DIR" -type f -name '*.csv' -mtime +"$HISTORY_DAYS" -delete 2>/dev/null
 
-SUMMARY="Security scan finished: ${#SITES[@]} site(s), $n_malware with malware, $n_modified with modified files, $n_vuln with vulnerabilities, $n_errors with errors$([[ $MALWARE -eq 0 ]] && echo ' (malware scan skipped)')."
+SUMMARY="Security scan finished: ${#SITES[@]} site(s), $n_malware with malware, $n_suspicious with suspicious code/database content, $n_modified with modified files, $n_audit with audit findings, $n_vuln with vulnerabilities, $n_errors with errors$([[ $MALWARE -eq 0 ]] && echo ' (malware scan skipped)')."
 log "$SUMMARY"
 [[ ${#SUMMARY_LINES[@]} -gt 0 ]] && slack_message "$SUMMARY"$'\n'"$(printf '%s\n' "${SUMMARY_LINES[@]}")"
 

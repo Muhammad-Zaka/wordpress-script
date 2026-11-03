@@ -89,7 +89,8 @@ function read_wf_csv(string $file, array $labels, bool $forceHeader): array
 
 function load_wordfence(string $slug, array $config): array
 {
-    $result = ['available' => false, 'issues' => 0, 'vulns' => 0, 'modified_count' => 0, 'scanned_at' => null, 'status' => null,
+    $result = ['available' => false, 'issues' => 0, 'vulns' => 0, 'modified_count' => 0, 'db_count' => 0, 'pattern_count' => 0,
+               'audit_count' => 0, 'recent_count' => 0, 'total' => 0, 'scanned_at' => null, 'status' => null,
                'malware' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'vuln'    => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'modified' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
@@ -99,16 +100,21 @@ function load_wordfence(string $slug, array $config): array
     $result['malware'] = read_wf_csv(rtrim($config['malware_dir'], '/') . "/$slug.csv", $config['wordfence_malware_columns'] ?? [], $force);
     $result['vuln']    = read_wf_csv(rtrim($config['vuln_dir'] ?? '', '/') . "/$slug.csv", $config['wordfence_vuln_columns'] ?? [], $force);
 
-    // security-scan.sh writes "source,file,detection": split malware hits from modified (checksum) files
-    $result['modified'] = ['available' => false, 'rows' => [], 'header' => [], 'count' => 0];
+    // security-scan.sh writes "source,file,detection": split rows into one section per check type
+    $groups = ['checksum' => 'modified', 'database' => 'database', 'pattern' => 'pattern', 'audit' => 'audit', 'recent' => 'recent'];
+    foreach ($groups as $g) $result[$g] = ['available' => false, 'rows' => [], 'header' => [], 'count' => 0];
     if (strtolower($result['malware']['header'][0] ?? '') === 'source') {
-        $hdr = array_slice($result['malware']['header'], 1);
-        $mal = $mod = [];
+        $hdr = array_map(fn($h) => $h === 'File' ? 'Location' : $h, array_slice($result['malware']['header'], 1));
+        $buckets = array_fill_keys(array_merge(['malware'], array_values($groups)), []);
         foreach ($result['malware']['rows'] as $r) {
-            if (strtolower((string) ($r[0] ?? '')) === 'checksum') $mod[] = array_slice($r, 1); else $mal[] = array_slice($r, 1);
+            $key = $groups[strtolower((string) ($r[0] ?? ''))] ?? 'malware';
+            $buckets[$key][] = array_slice($r, 1);
         }
-        $result['malware']  = array_merge($result['malware'], ['rows' => $mal, 'count' => count($mal), 'header' => $hdr]);
-        $result['modified'] = ['available' => true, 'rows' => $mod, 'count' => count($mod), 'header' => $hdr];
+        foreach ($buckets as $key => $rows) {
+            $result[$key] = array_merge($result[$key] ?? [], ['available' => true, 'rows' => $rows, 'header' => $hdr,
+                // "(more)" rows are notes, not findings
+                'count' => count(array_filter($rows, fn($r) => ($r[0] ?? '') !== '(more)'))]);
+        }
     }
 
     $statusFile = rtrim($config['wordfence_status_dir'] ?? '', '/') . "/$slug.json";
@@ -126,6 +132,11 @@ function load_wordfence(string $slug, array $config): array
     $result['issues']     = $result['malware']['count'];
     $result['vulns']      = $result['vuln']['count'];
     $result['modified_count'] = $result['modified']['count'];
+    $result['db_count']       = $result['database']['count'];
+    $result['pattern_count']  = $result['pattern']['count'];
+    $result['audit_count']    = $result['audit']['count'];
+    $result['recent_count']   = $result['recent']['count'];
+    $result['total']          = $result['issues'] + $result['vulns'] + $result['modified_count'] + $result['db_count'] + $result['pattern_count'] + $result['audit_count'];
     $result['scanned_at'] = !empty($result['status']['scanned_at']) ? strtotime($result['status']['scanned_at'])
                           : (max($result['malware']['mtime'] ?? 0, $result['vuln']['mtime'] ?? 0) ?: null);
     return $result;
@@ -263,6 +274,12 @@ function health_checks(array $s, array $config): array
     if (!empty($s['errors']))                            $add('warning', 'Collector warnings', plural(count($s['errors']), 'warning') . ' during collection');
     if ($s['_wf']['issues'] > 0)                         $add('danger', 'Malware found', plural($s['_wf']['issues'], 'file') . ' flagged by the malware scan');
     if ($s['_wf']['modified_count'] > 0)                 $add('warning', 'Modified files', plural($s['_wf']['modified_count'], 'file') . ' differ from the official WordPress/plugin versions');
+    if ($s['_wf']['db_count'] > 0)                       $add('danger', 'Suspicious database content', plural($s['_wf']['db_count'], 'post/option') . ' with injected scripts or hidden links');
+    if ($s['_wf']['pattern_count'] > 0)                  $add('warning', 'Suspicious code', plural($s['_wf']['pattern_count'], 'match') . ' of obfuscated or backdoor-like PHP');
+    if ($s['_wf']['audit_count'] > 0) {
+        $first = $s['_wf']['audit']['rows'][0] ?? [];
+        $add('warning', 'Security audit', plural($s['_wf']['audit_count'], 'finding') . (isset($first[1]) ? ', e.g. ' . $first[1] : ''));
+    }
     if ($s['_wf']['vulns'] > 0)                          $add('warning', 'Known vulnerabilities', plural($s['_wf']['vulns'], 'vulnerable plugin/theme/core item') . ', update needed');
     foreach ($s['_wf']['failed'] as $msg)                $add('warning', 'Security scan problem', $msg . ' on the last run');
     if ($s['_wf']['scanned_at'] && time() - $s['_wf']['scanned_at'] > ($config['wordfence_stale_days'] ?? 8) * 86400)
@@ -397,5 +414,6 @@ function dot(string $tone, string $label, string $title = ''): string
 
 function plural(int $n, string $word): string
 {
-    return $n . ' ' . $word . ($n === 1 ? '' : 's');
+    if ($n === 1) return "1 $word";
+    return $n . ' ' . (preg_match('/(s|x|ch|sh)$/', $word) ? $word . 'es' : $word . 's');
 }

@@ -71,6 +71,18 @@ Wordfence CLI was discontinued (no new licences; the free version reached end of
 
 WP-CLI runs with `--skip-plugins --skip-themes`, so a compromised site's code is never executed.
 
+Additional checks (all in the same run and report):
+
+| Check | What it flags |
+|---|---|
+| Database | posts and options containing injected scripts (`eval(`, `atob(`, `fromCharCode`, `base64_decode`...), hidden iframes and hidden links. Options matching `DB_IGNORE_OPTIONS` (caches) are skipped |
+| Suspicious code | PHP with `eval(base64_decode(...))`-style obfuscation, nested decoding, code run from `$_POST/$_GET`, includes of `.ico/.png/.txt` files, long hex-escaped strings (patterns in `SUSPICIOUS_PATTERNS`) |
+| Audit | administrators added since the first scan (or registered in the last 30 days), open registration with an admin/editor default role, `siteurl`/`home` pointing elsewhere, PHP files in uploads, world-writable files, backups/logs/`.git`/`.env` in the web root, changes to `wp-config.php` / `.htaccess` / `.user.ini` |
+| Recently changed | PHP files changed in the last 3 days, for review only (never alerts) |
+
+Baselines for admins and key file hashes are kept in `/var/lib/security-scan/<vhost>/`. The first run
+records the baseline; later runs flag what changed.
+
 ```bash
 sudo ./scripts/security-scan.sh                 # all WordPress vhosts
 sudo ./scripts/security-scan.sh athleticia      # one or more vhosts

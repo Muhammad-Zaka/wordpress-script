@@ -121,7 +121,7 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cf" type="button">Cloudflare</button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-backups" type="button">Backups<?php if ($bk['available']): ?><span class="count"><?= count($bk['rows']) ?></span><?php endif; ?></button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cms" type="button">CMS<?php if ($otherFolders): ?><span class="count"><?= count($otherFolders) ?></span><?php endif; ?></button>
-    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-security" type="button">Security<?php $secN = $wf['issues'] + $wf['vulns'] + $wf['modified_count']; if ($secN): ?><span class="count" style="color: var(--<?= $wf['issues'] ? 'danger' : 'warning' ?>)"><?= $secN ?></span><?php endif; ?></button>
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-security" type="button">Security<?php $secN = $wf['total']; if ($secN): ?><span class="count" style="color: var(--<?= $wf['issues'] ? 'danger' : 'warning' ?>)"><?= $secN ?></span><?php endif; ?></button>
     <?php if ($s['errors'] || !empty($cfd['fetch_errors'])): ?>
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-log" type="button">Collector log</button>
     <?php endif; ?>
@@ -390,7 +390,7 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
         <?php endif; ?>
     </div>
 
-    <!-- Security (malware, modified files, vulnerabilities) -->
+    <!-- Security (malware, database, suspicious code, modified files, audit, vulnerabilities, recent changes) -->
     <div class="tab-pane fade" id="t-security">
         <?php if (!$wf['available']): ?>
             <p class="t-muted">No security scan report for this site yet. Reports are written by <span class="mono">scripts/security-scan.sh</span>.</p>
@@ -406,11 +406,16 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
             <?php
             $sections = [
                 ['malware', 'Malware', 'No malware found in the last scan.', 'danger', 'file'],
+                ['database', 'Database', 'No injected scripts or hidden links found in posts and options.', 'danger', 'item'],
+                ['pattern', 'Suspicious code', 'No obfuscated or backdoor-like PHP found.', 'warning', 'match'],
                 ['modified', 'Modified files', 'Core and wordpress.org plugin files match the official versions.', 'warning', 'file'],
+                ['audit', 'Admins, settings and files', 'No new admins, risky settings, exposed files or permission problems.', 'warning', 'finding'],
                 ['vuln', 'Vulnerable plugins, themes and core', 'No known vulnerabilities in installed versions.', 'warning', 'item'],
+                ['recent', 'Recently changed PHP files', 'No PHP files changed recently.', 'ink-2', 'file'],
             ];
             foreach ($sections as [$key, $title, $cleanText, $tone, $unit]):
-                $rep = $wf[$key]; ?>
+                $rep = $wf[$key];
+                if (!$rep['available'] && !in_array($key, ['malware', 'vuln'], true)) continue;  // older report formats ?>
             <section class="panel" style="margin-top: 20px">
                 <div class="panel-head">
                     <h2 class="t-h2 m-0"><?= h($title) ?></h2>
