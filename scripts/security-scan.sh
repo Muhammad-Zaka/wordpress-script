@@ -61,7 +61,8 @@ MALDET_SIGS_DIR="/usr/local/maldetect/sigs"   # Linux Malware Detect signatures 
 CLAM_TIMEOUT=14400                      # one scan for all sites
 CLAM_OPTS=(--recursive --infected --no-summary --scan-archive=no --max-filesize=10M --max-scansize=20M)
 # Only scan file types that malware lives in (regex on the file name). Empty = scan every file (much slower).
-CLAM_INCLUDE='\.(php[0-9]?|phtml|pht|phar|inc|js|html?|htaccess|user\.ini|svg|ico|sh|pl|py|cgi)$'
+# The second part also catches double extensions used to hide PHP, e.g. shell.php.jpg
+CLAM_INCLUDE='(\.(php[0-9]?|phtml|pht|phar|inc|js|html?|htaccess|user\.ini|svg|ico|sh|pl|py|cgi)$|\.(php[0-9]?|phtml|phar)\.[^/]*$)'
 # Folders skipped by ClamAV and the code checks: caches and backup plugins' archives (huge, not executable)
 SKIP_DIR_NAMES=(cache updraft ai1wm-backups wpvividbackups backup backups backup-db 'backwpup-*' node_modules .git)
 
