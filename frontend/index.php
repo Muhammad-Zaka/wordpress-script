@@ -13,7 +13,7 @@ $n = ['all' => count($sites), 'danger' => 0, 'warning' => 0, 'ok' => 0, 'updates
 foreach ($sites as $s) {
     $n[$s['_worst']]++;
     if ($s['_needs_update'])        $n['updates']++;
-    if ($s['_wf']['issues'] > 0)    $n['wordfence']++;
+    if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0) $n['wordfence']++;
     if ($s['_cf']['failed_checks']) $n['drift']++;
     if ($s['_stale'])               $n['stale']++;
     if (!empty($s['cloudflare']['is_pro_or_higher'])) $n['pro']++; elseif ($s['_has_cf']) $n['free']++;
@@ -126,9 +126,10 @@ page_header('Fleet health');
                 $cf = $s['_cf'];
                 $bk = $s['_bk'];
                 $issues = array_values(array_filter($s['_health'], fn($c) => $c['level'] !== 'info'));
+                usort($issues, fn($a, $b) => ($a['level'] === 'danger' ? 0 : 1) <=> ($b['level'] === 'danger' ? 0 : 1));
                 $tags = [$s['_worst']];
                 if ($s['_needs_update'])        $tags[] = 'updates';
-                if ($s['_wf']['issues'] > 0)    $tags[] = 'wordfence';
+                if ($s['_wf']['issues'] > 0 || $s['_wf']['vulns'] > 0) $tags[] = 'wordfence';
                 if ($cf['failed_checks'])       $tags[] = 'drift';
                 if ($s['_stale'])               $tags[] = 'stale';
                 if (!empty($s['cloudflare']['is_pro_or_higher'])) $tags[] = 'pro';
@@ -145,7 +146,7 @@ page_header('Fleet health');
                 data-domain="<?= h($s['domain']) ?>" data-wp="<?= h($wp['version'] ?? '') ?>"
                 data-updates="<?= $s['plugins']['updates_available'] + $s['themes']['updates_available'] + (($wp['update_available'] ?? false) ? 100 : 0) ?>"
                 data-cf="<?= $cf['score'] ?? -1 ?>" data-backup="<?= $pb ? $pb['age_days'] : 99999 ?>"
-                data-wf="<?= $s['_wf']['available'] ? $s['_wf']['issues'] : -1 ?>"
+                data-wf="<?= $s['_wf']['available'] ? $s['_wf']['issues'] * 1000 + $s['_wf']['vulns'] : -1 ?>"
                 data-health="<?= $rank[$s['_worst']] * -1000 + count($issues) ?>" data-age="<?= (int) $s['_ts'] ?>">
                 <td>
                     <a href="<?= h($url) ?>" class="site-name"><?= h($s['domain']) ?></a>
@@ -181,7 +182,10 @@ page_header('Fleet health');
                 </td>
                 <td>
                     <?php if (!$s['_wf']['available']): ?><?= dot('off', 'No scan') ?>
-                    <?php elseif ($s['_wf']['issues']): ?><?= dot('danger', plural($s['_wf']['issues'], 'finding')) ?>
+                    <?php elseif ($s['_wf']['issues']): ?><?= dot('danger', plural($s['_wf']['issues'], 'malware file')) ?>
+                        <?php if ($s['_wf']['vulns']): ?><div class="t-small" style="color: var(--warning)"><?= $s['_wf']['vulns'] === 1 ? '1 vulnerability' : $s['_wf']['vulns'] . ' vulnerabilities' ?></div><?php endif; ?>
+                    <?php elseif ($s['_wf']['vulns']): ?><?= dot('warning', $s['_wf']['vulns'] === 1 ? '1 vulnerability' : $s['_wf']['vulns'] . ' vulnerabilities') ?>
+                    <?php elseif ($s['_wf']['failed']): ?><?= dot('warning', 'Scan failed') ?>
                     <?php else: ?><?= dot('ok', 'Clean') ?><?php endif; ?>
                 </td>
                 <td>

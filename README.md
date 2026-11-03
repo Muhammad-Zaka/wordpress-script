@@ -4,6 +4,8 @@ Collects WordPress + Cloudflare metrics for every OpenLiteSpeed vhost and shows 
 
 ```
 scripts/wordpress-metrics.sh   collector (run as root via cron) -> one JSON per site
+scripts/wordfence-scan.sh      Wordfence malware + vulnerability scans -> reports for the dashboard, Slack alerts
+scripts/cloudflare-set-min-tls.sh  raise Cloudflare minimum TLS across zones
 frontend/config.php            paths, thresholds, Cloudflare standard, optional auth
 frontend/lib.php               loading, normalising, health checks, compliance
 frontend/index.php             fleet dashboard
@@ -54,6 +56,37 @@ Suggested cron (overlapping runs are prevented with a lock):
 15 */6 * * * /path/to/scripts/wordpress-metrics.sh >> /var/log/wordpress-metrics.log 2>&1
 ```
 
+## Wordfence scans
+
+```bash
+sudo ./scripts/wordfence-scan.sh               # all WordPress vhosts
+sudo ./scripts/wordfence-scan.sh athleticia    # one or more vhosts
+sudo ./scripts/wordfence-scan.sh --no-slack    # no Slack messages
+sudo ./scripts/wordfence-scan.sh --notify-all  # alert for every site with findings, not just changes
+```
+
+Per site it writes:
+
+| File | Used by |
+|---|---|
+| `/nas/metrics/public_html/malware-reports/<vhost>.csv` | dashboard (malware) |
+| `/nas/metrics/public_html/vuln-reports/<vhost>.csv` | dashboard (vulnerabilities) |
+| `/nas/metrics/public_html/wordfence-status/<vhost>.json` | dashboard (scan time, failures) |
+| `/nas/metrics/wordfence-history/<vhost>/<date>-{malware,vuln}.csv` | history, kept 30 days |
+| `/home/<vhost>/{malware,vuln}-scan.csv` | the original locations |
+
+A scan that fails keeps the previous report (the dashboard shows the failure instead of "clean").
+Slack alerts are sent only when a site's findings change, with the CSVs attached, plus one summary
+per run. Slack settings go in `~/.site-setup/creds`:
+
+```bash
+slack_webhook_url="https://hooks.slack.com/services/..."
+slack_bot_token="xoxb-..."        # optional, to attach CSVs (scope: files:write, bot in channel)
+slack_channel_id="C0123456789"    # channel ID, not #name
+```
+
+Suggested cron: `30 2 * * * /path/to/scripts/wordfence-scan.sh >> /var/log/wordfence-scan.log 2>&1`
+
 ## Raising Cloudflare minimum TLS
 
 `scripts/cloudflare-set-min-tls.sh` sets "Minimum TLS Version" to 1.2 across zones. It is a dry run
@@ -73,7 +106,7 @@ Needs **Zone Settings: Edit** on the API token (the global key works as-is).
 ## Frontend
 
 Deploy the `frontend/` folder. Paths default to `/nas/...` and can be overridden in `config.php`
-or with `WPM_METRICS_DIR` / `WPM_MALWARE_DIR` environment variables.
+or with `WPM_METRICS_DIR` / `WPM_MALWARE_DIR` / `WPM_VULN_DIR` / `WPM_WF_STATUS_DIR` environment variables.
 
 Backups are read from `/nas/metrics/public_html/backups/<vhost>.csv` (columns: File Name, Backup Date,
 Backup Type, Extension). Backups are informational only (Backups tab and dashboard column); they don't raise warnings.

@@ -121,7 +121,7 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cf" type="button">Cloudflare</button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-backups" type="button">Backups<?php if ($bk['available']): ?><span class="count"><?= count($bk['rows']) ?></span><?php endif; ?></button>
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-cms" type="button">CMS<?php if ($otherFolders): ?><span class="count"><?= count($otherFolders) ?></span><?php endif; ?></button>
-    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-wordfence" type="button">Wordfence<?php if ($wf['issues']): ?><span class="count" style="color: var(--danger)"><?= $wf['issues'] ?></span><?php endif; ?></button>
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-wordfence" type="button">Wordfence<?php if ($wf['issues'] || $wf['vulns']): ?><span class="count" style="color: var(--<?= $wf['issues'] ? 'danger' : 'warning' ?>)"><?= $wf['issues'] + $wf['vulns'] ?></span><?php endif; ?></button>
     <?php if ($s['errors'] || !empty($cfd['fetch_errors'])): ?>
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-log" type="button">Collector log</button>
     <?php endif; ?>
@@ -393,23 +393,50 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
     <!-- Wordfence -->
     <div class="tab-pane fade" id="t-wordfence">
         <?php if (!$wf['available']): ?>
-            <p class="t-muted">No Wordfence scan report found for this site.</p>
-        <?php elseif (!$wf['issues']): ?>
-            <p><?= dot('ok', 'Last scan was clean') ?> <span class="t-faint ms-2">Report updated <?= h(human_age(time() - $wf['scanned_at'])) ?></span></p>
+            <p class="t-muted">No Wordfence scan report for this site yet. Reports are written by <span class="mono">scripts/wordfence-scan.sh</span>.</p>
         <?php else: ?>
-            <p class="t-faint t-small">Report updated <?= h(human_age(time() - $wf['scanned_at'])) ?> (<?= h(date('Y-m-d H:i', $wf['scanned_at'])) ?>)</p>
-            <div class="panel">
+            <p class="t-muted">
+                <?php if ($wf['scanned_at']): ?>Last scanned <?= h(human_age(time() - $wf['scanned_at'])) ?> <span class="t-faint">(<?= h(date('j M Y, H:i', $wf['scanned_at'])) ?>)</span><?php endif; ?>
+            </p>
+            <?php foreach ($wf['failed'] as $k => $msg): $st = $wf['status'][$k] ?? []; ?>
+                <p><?= dot('warning', $msg) ?> <span class="t-muted ms-2">Showing the previous report<?= isset($st['exit_code']) ? ' (exit code ' . (int) $st['exit_code'] . ')' : '' ?>.</span></p>
+                <?php if (!empty($st['log'])): ?><pre class="code mono"><?= h($st['log']) ?></pre><?php endif; ?>
+            <?php endforeach; ?>
+
+            <?php
+            $sections = [
+                ['malware', 'Malware', 'No malware found in the last scan.', 'danger', 'file'],
+                ['vuln', 'Vulnerable plugins, themes and core', 'No known vulnerabilities in installed versions.', 'warning', 'item'],
+            ];
+            foreach ($sections as [$key, $title, $cleanText, $tone, $unit]):
+                $rep = $wf[$key]; ?>
+            <section class="panel" style="margin-top: 20px">
+                <div class="panel-head">
+                    <h2 class="t-h2 m-0"><?= h($title) ?></h2>
+                    <?php if ($rep['available']): ?><span class="t-small" style="color: var(--<?= $rep['count'] ? $tone : 'ink-3' ?>)"><?= plural($rep['count'], $unit) ?></span><?php endif; ?>
+                </div>
+                <?php if (!$rep['available']): ?>
+                    <div class="empty pt-0">No report yet.</div>
+                <?php elseif (!$rep['count']): ?>
+                    <div class="empty pt-0"><?= dot('ok', $cleanText) ?></div>
+                <?php else: ?>
                 <div class="table-responsive">
                     <table class="table align-middle">
-                        <?php if ($wf['header']): ?><thead><tr><?php foreach ($wf['header'] as $hc): ?><th><?= h($hc) ?></th><?php endforeach; ?></tr></thead><?php endif; ?>
+                        <thead><tr><?php foreach ($rep['header'] as $hc): ?><th><?= h($hc) ?></th><?php endforeach; ?></tr></thead>
                         <tbody>
-                        <?php foreach ($wf['rows'] as $row): ?>
-                            <tr><?php foreach ($row as $cell): ?><td class="text-break"><?= h($cell) ?></td><?php endforeach; ?></tr>
+                        <?php $root = rtrim((string) ($s['site_path'] ?? ''), '/') . '/';
+                        foreach ($rep['rows'] as $row): ?>
+                            <tr><?php foreach ($row as $cell): $cell = (string) $cell;
+                                if ($root !== '/' && str_starts_with($cell, $root)) $cell = substr($cell, strlen($root)); // show paths relative to the site ?>
+                                <td class="text-break t-small<?= strlen($cell) > 60 && !preg_match('#^https?://#', $cell) ? ' mono' : '' ?>"><?= preg_match('#^https?://\S+$#', $cell) ? '<a href="' . h($cell) . '" target="_blank" rel="noopener">Details</a>' : h(strlen($cell) > 300 ? substr($cell, 0, 300) . '…' : $cell) ?></td>
+                            <?php endforeach; ?></tr>
                         <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
-            </div>
+                <?php endif; ?>
+            </section>
+            <?php endforeach; ?>
         <?php endif; ?>
     </div>
 
