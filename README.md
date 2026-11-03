@@ -7,6 +7,7 @@ scripts/wordpress-metrics.sh   collector (run as root via cron) -> one JSON per 
 scripts/security-scan.sh       vulnerability, modified-file and malware scans -> dashboard reports, Slack alerts
 scripts/cloudflare-set-min-tls.sh  raise Cloudflare minimum TLS across zones
 scripts/cloudflare-zone-ids.sh list Cloudflare Zone ID + Account ID for every site
+scripts/cloudflare-plugin-keys.sh  set the Cloudflare WP plugin's API token per site, by account
 frontend/config.php            paths, thresholds, Cloudflare standard, optional auth
 frontend/lib.php               loading, normalising, health checks, compliance
 frontend/index.php             fleet dashboard
@@ -126,6 +127,31 @@ Suggested cron: `30 2 * * * /path/to/scripts/security-scan.sh >> /var/log/securi
 
 The CSV has: vhost, domain, wordpress, zone_name, zone_id, account_id, account_name, plan, status, note.
 Subdomain sites resolve to their parent zone. Needs only Zone: Read.
+
+## Cloudflare plugin API tokens
+
+`scripts/cloudflare-plugin-keys.sh` sets `cloudflare_api_key` (and optionally `cloudflare_api_email`) for the
+Cloudflare WordPress plugin on every site, using the token of the Cloudflare account that owns the site's zone.
+
+Key file `~/.site-setup/cloudflare-plugin-keys` (`chmod 600`), one account per line:
+
+```
+# account_id                          api_token                                  email (optional)
+9f1e2d3c4b5a69788776655443322110      AbCdEf0123456789AbCdEf0123456789AbCdEf01
+1234567890abcdef1234567890abcdef      ZyXwVu9876543210ZyXwVu9876543210ZyXwVu98   ops@example.com
+```
+
+```bash
+sudo ./scripts/cloudflare-plugin-keys.sh                 # dry run
+sudo ./scripts/cloudflare-plugin-keys.sh --apply         # update the sites
+sudo ./scripts/cloudflare-plugin-keys.sh athleticia --apply
+sudo ./scripts/cloudflare-plugin-keys.sh --rollback ~/.site-setup/cloudflare-plugin-backups/<stamp>.tsv --apply
+```
+
+Before writing, each token is checked with Cloudflare (active, and able to see the site's zone); sites
+without the plugin, without a zone, or whose account has no token are skipped. Tokens are passed to
+WP-CLI on stdin (never on the command line), logs show only the last 4 characters, and the previous
+values are saved in `~/.site-setup/cloudflare-plugin-backups/` (mode 600) for rollback.
 
 ## Raising Cloudflare minimum TLS
 
