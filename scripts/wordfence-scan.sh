@@ -18,7 +18,7 @@
 
 set -uo pipefail
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -42,6 +42,12 @@ REPORT_OWNER="root:nogroup"
 REPORT_MODE="0640"
 
 SCAN_TIMEOUT=3600     # seconds per scan per site
+
+# What the malware scan does with wp-content/uploads (usually the slowest part: thousands of media files)
+#   php-only  skip media, but still scan PHP/script files hidden in uploads (default: fast, keeps backdoor detection)
+#   skip      don't scan uploads at all
+#   full      scan everything, like the original script
+UPLOADS_MODE="php-only"
 
 # Scan arguments (same as the original script)
 VULN_ARGS=(vuln-scan -q --output-format csv)
@@ -160,16 +166,37 @@ count_rows() { [[ -s "$1" ]] && grep -c '[^[:space:]]' "$1" || echo 0; }
 # Order-independent fingerprint of a report, to tell whether findings changed
 fingerprint() { [[ -s "$1" ]] && sort "$1" | md5sum | cut -d' ' -f1 || echo "empty"; }
 
-# Run one scan into $out. Prints "exit_code seconds". The report file always exists afterwards.
+# Run one scan: run_scan OUT_FILE WORDFENCE_ARGS... -- PATHS...
+# Prints "exit_code seconds". The report file always exists afterwards.
 run_scan() {
-    local out="$1" target="$2"; shift 2
-    local start code
+    local out="$1"; shift
+    local args=() start code
+    while [[ $# -gt 0 && "$1" != "--" ]]; do args+=("$1"); shift; done
+    shift
     start=$(date +%s)
     : > "$out"
-    timeout "$SCAN_TIMEOUT" "$WORDFENCE" "$@" --output-path "$out" "$target" > "$WORK/scan.log" 2>&1
+    timeout "$SCAN_TIMEOUT" "$WORDFENCE" "${args[@]}" --output-path "$out" "$@" > "$WORK/scan.log" 2>&1
     code=$?
     [[ -f "$out" ]] || : > "$out"
     echo "$code $(( $(date +%s) - start ))"
+}
+
+# Paths for the malware scan (NUL-separated), leaving out wp-content/uploads according to UPLOADS_MODE
+malware_targets() {
+    local root="$1" uploads="$1/wp-content/uploads"
+    if [[ "$UPLOADS_MODE" == "full" || ! -e "$uploads" ]]; then
+        printf '%s\0' "$root"
+        return
+    fi
+    find -H "$root" -mindepth 1 -maxdepth 1 ! -name wp-content -print0                 # everything but wp-content
+    [[ -d "$root/wp-content" ]] && \
+        find -H "$root/wp-content" -mindepth 1 -maxdepth 1 ! -name uploads -print0     # wp-content but uploads
+    if [[ "$UPLOADS_MODE" == "php-only" ]]; then
+        # Executable code has no business in uploads; *.php* also catches tricks like shell.php.jpg
+        find -H "$uploads" -type f \( -iname '*.php*' -o -iname '*.phtml' -o -iname '*.pht' -o -iname '*.phar' \
+            -o -iname '*.inc' -o -iname '*.cgi' -o -iname '*.pl' -o -iname '*.py' -o -iname '*.sh' \
+            -o -name '.htaccess' -o -name '.user.ini' \) -print0 2>/dev/null
+    fi
 }
 
 # Copy a report into place atomically (so the dashboard never reads a half-written file)
@@ -207,9 +234,15 @@ for VHOST_DIR in "${DIRS[@]}"; do
     MAL_OUT="$WORK/$VHOST-malware.csv"
     VULN_OUT="$WORK/$VHOST-vuln.csv"
 
-    read -r VULN_CODE VULN_SECS < <(run_scan "$VULN_OUT" "$WEB_ROOT" "${VULN_ARGS[@]}")
+    read -r VULN_CODE VULN_SECS < <(run_scan "$VULN_OUT" "${VULN_ARGS[@]}" -- "$WEB_ROOT")
     VULN_LOG=$(tail -c 500 "$WORK/scan.log")
-    read -r MAL_CODE MAL_SECS < <(run_scan "$MAL_OUT" "$WEB_ROOT" "${MALWARE_ARGS[@]}")
+    mapfile -d '' MAL_TARGETS < <(malware_targets "$WEB_ROOT")
+    if [[ "$UPLOADS_MODE" != "full" && -e "$WEB_ROOT/wp-content/uploads" ]]; then
+        UP_FILES=0
+        for t in "${MAL_TARGETS[@]}"; do [[ "$t" == "$WEB_ROOT/wp-content/uploads/"* ]] && UP_FILES=$((UP_FILES + 1)); done
+        log "  uploads: $([[ "$UPLOADS_MODE" == "skip" ]] && echo "skipped" || echo "media skipped, $UP_FILES script file(s) included")"
+    fi
+    read -r MAL_CODE MAL_SECS < <(run_scan "$MAL_OUT" "${MALWARE_ARGS[@]}" -- "${MAL_TARGETS[@]}")
     MAL_LOG=$(tail -c 500 "$WORK/scan.log")
 
     MAL_COUNT=$(count_rows "$MAL_OUT")

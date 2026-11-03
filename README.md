@@ -75,6 +75,10 @@ Per site it writes:
 | `/nas/metrics/wordfence-history/<vhost>/<date>-{malware,vuln}.csv` | history, kept 30 days |
 | `/home/<vhost>/{malware,vuln}-scan.csv` | the original locations |
 
+The malware scan skips media in `wp-content/uploads` (the slow part) but still scans any PHP or other
+script files found there, since uploads is a common hiding place for backdoors. Set `UPLOADS_MODE` at the
+top of the script to `skip` (ignore uploads entirely) or `full` (scan everything).
+
 A scan that fails keeps the previous report (the dashboard shows the failure instead of "clean").
 Slack alerts are sent only when a site's findings change, with the CSVs attached, plus one summary
 per run. Slack settings go in `~/.site-setup/creds`:
