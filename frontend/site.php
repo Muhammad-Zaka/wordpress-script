@@ -423,7 +423,9 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
             <section class="panel" style="margin-top: 20px">
                 <div class="panel-head">
                     <h2 class="t-h2 m-0"><?= h($title) ?></h2>
-                    <?php if ($rep['available']): ?><span class="t-small" style="color: var(--<?= $rep['count'] ? $tone : 'ink-3' ?>)"><?= plural($rep['count'], $unit) ?></span><?php endif; ?>
+                    <?php if ($rep['available']): ?><span class="t-small" style="color: var(--<?= $rep['count'] ? $tone : 'ink-3' ?>)"><?php
+                        if ($key === 'vuln' && $rep['count'] && ($vg = group_vulns($rep))): ?><?= $rep['count'] === 1 ? '1 vulnerability' : $rep['count'] . ' vulnerabilities' ?> in <?= plural(count($vg), 'item') ?><?php
+                        else: ?><?= plural($rep['count'], $unit) ?><?php endif; ?></span><?php endif; ?>
                 </div>
                 <?php if (!$rep['available']): ?>
                     <div class="empty pt-0">No report yet.</div>
@@ -431,6 +433,41 @@ page_header($s['domain'] . ' – Fleet health', 'All sites');
                     <div class="empty pt-0"><?= dot('off', 'Not scanned: ClamAV is not installed on the server, so the malware scan was skipped.') ?></div>
                 <?php elseif (!$rep['count']): ?>
                     <div class="empty pt-0"><?= dot('ok', $cleanText) ?></div>
+                <?php elseif ($key === 'vuln' && ($vgroups = group_vulns($rep))): ?>
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead><tr><th>Plugin / theme</th><th>Installed</th><th>Vulnerabilities</th><th>Update to</th></tr></thead>
+                        <tbody>
+                        <?php
+                        $sevTone = ['critical' => 'tag-danger', 'high' => 'tag-danger', 'medium' => 'tag-warning', 'low' => ''];
+                        foreach ($vgroups as $g): ?>
+                            <tr>
+                                <td><div class="fw-medium"><?= h($g['slug']) ?></div><div class="t-faint t-small"><?= h(ucfirst($g['type'])) ?></div></td>
+                                <td class="mono"><?= h($g['version']) ?></td>
+                                <td>
+                                    <details>
+                                        <summary style="color: var(--ink)">
+                                            <?= count($g['items']) === 1 ? '1 vulnerability' : count($g['items']) . ' vulnerabilities' ?>
+                                            <?php if ($g['worst']): ?><span class="tag <?= $sevTone[$g['worst']] ?? '' ?> ms-1"><?= h(ucfirst($g['worst'])) ?></span><?php endif; ?>
+                                        </summary>
+                                        <ul class="list-unstyled mt-2 mb-0">
+                                            <?php foreach ($g['items'] as $v): ?>
+                                                <li class="t-small py-1" style="border-top: 1px solid var(--line-2)">
+                                                    <?php if ($v['severity']): ?><span class="tag <?= $sevTone[$v['severity']] ?? '' ?> me-1"><?= h(ucfirst($v['severity'])) ?></span><?php endif; ?>
+                                                    <?= h($v['title']) ?>
+                                                    <span class="t-faint"><?= $v['fixed'] !== '' ? (strcasecmp($v['fixed'], 'No fix yet') === 0 ? '· no fix yet' : '· fixed in ' . h($v['fixed'])) : '' ?></span>
+                                                    <?php if (preg_match('#^https?://#', $v['link'])): ?> <a href="<?= h($v['link']) ?>" target="_blank" rel="noopener">Details</a><?php endif; ?>
+                                                </li>
+                                            <?php endforeach; ?>
+                                        </ul>
+                                    </details>
+                                </td>
+                                <td><?= $g['fix'] !== '' ? '<span class="mono">' . h($g['fix']) . '</span>' : '' ?><?= $g['unfixed'] ? '<div class="t-small" style="color: var(--danger)">' . ($g['fix'] !== '' ? 'Some issues have no fix yet' : 'No fix yet: consider removing') . '</div>' : '' ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
                 <?php else: ?>
                 <div class="table-responsive">
                     <table class="table align-middle">

@@ -325,9 +325,11 @@ is_ignored() {
         f="$root/$loc"
         # Only a pure placeholder: once PHP comments/whitespace are stripped, no code may remain
         # (attackers often append backdoors to "Silence is golden" files)
-        if [[ -f "$f" && $(stat -c %s "$f" 2>/dev/null || echo 9999) -le 1024 ]] && grep -qi 'silence is golden' "$f" 2>/dev/null; then
-            local code; code=$(php -w "$f" 2>/dev/null | tr -d '[:space:]')
-            [[ -z "$code" || "$code" == "<?php" || "$code" == "<?php?>" ]] && return 0
+        # The whole file must be: optional BOM, <?php, then only whitespace and comments (// # or /* */),
+        # optionally ?>. A "?>" inside a // comment ends PHP mode, so it is not allowed there.
+        if [[ -f "$f" && $(stat -c %s "$f" 2>/dev/null || echo 9999) -le 1024 ]] && grep -qi 'silence is golden' "$f" 2>/dev/null \
+            && grep -Pzq '\A(?:\xEF\xBB\xBF)?\s*<\?php(?:\s|//(?:(?!\?>)[^\n])*|#(?:(?!\?>)[^\n])*|/\*(?:(?!\*/)[\s\S])*\*/)*(?:\?>\s*)?\z' "$f" 2>/dev/null; then
+            return 0
         fi
     fi
     return 1

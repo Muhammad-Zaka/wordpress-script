@@ -143,6 +143,35 @@ function load_wordfence(string $slug, array $config): array
     return $result;
 }
 
+/**
+ * Group vulnerability rows (security-scan.sh format) by installed item.
+ * Returns [] for other formats. Each group: type, slug, version, items[], worst, fix (version to update to), unfixed.
+ */
+function group_vulns(array $rep): array
+{
+    $col = array_flip(array_map('strtolower', $rep['header'] ?? []));
+    if (!isset($col['slug'], $col['vulnerability'])) return [];
+    $rank = ['critical' => 4, 'high' => 3, 'medium' => 2, 'low' => 1];
+    $groups = [];
+    foreach ($rep['rows'] as $r) {
+        $g = ($r[$col['type']] ?? '') . '|' . $r[$col['slug']] . '|' . ($r[$col['installed version']] ?? '');
+        $groups[$g] ??= ['type' => $r[$col['type']] ?? '', 'slug' => $r[$col['slug']], 'version' => $r[$col['installed version']] ?? '',
+                         'items' => [], 'worst' => '', 'fix' => '', 'unfixed' => false];
+        $sev = strtolower((string) ($r[$col['severity']] ?? ''));
+        $fixed = (string) ($r[$col['fixed in']] ?? '');
+        $groups[$g]['items'][] = ['title' => $r[$col['vulnerability']], 'severity' => $sev, 'fixed' => $fixed, 'link' => $r[$col['link']] ?? ''];
+        if (($rank[$sev] ?? 0) > ($rank[$groups[$g]['worst']] ?? 0)) $groups[$g]['worst'] = $sev;
+        if (strcasecmp($fixed, 'No fix yet') === 0) $groups[$g]['unfixed'] = true;
+        elseif (preg_match('/^\d+(\.\d+)*/', $fixed, $m) && ($groups[$g]['fix'] === '' || version_compare($m[0], $groups[$g]['fix'], '>'))) $groups[$g]['fix'] = $m[0];
+    }
+    $groups = array_values($groups);
+    usort($groups, fn($a, $b) => [($rank[$b['worst']] ?? 0), count($b['items'])] <=> [($rank[$a['worst']] ?? 0), count($a['items'])]);
+    foreach ($groups as &$g) {
+        usort($g['items'], fn($a, $b) => ($rank[$b['severity']] ?? 0) <=> ($rank[$a['severity']] ?? 0));
+    }
+    return $groups;
+}
+
 // ---------------------------------------------------------------------------
 // Backups CSV  (File Name, Backup Date, Backup Type, Extension)
 // ---------------------------------------------------------------------------
