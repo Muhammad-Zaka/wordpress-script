@@ -8,7 +8,7 @@
 #                    free WPVulnerability database (https://www.wpvulnerability.net)
 #   Modified files   WP-CLI checksums: core files and wordpress.org plugins compared with the originals
 #   Malware          ClamAV with Linux Malware Detect (maldet) signatures, one scan for all sites
-#   Database         posts/options searched for injected scripts, hidden iframes and hidden links
+#   Database         posts/options: obfuscated scripts, hidden iframes, hidden links (embeds and code samples ignored)
 #   Suspicious code  PHP using obfuscation/backdoor patterns (eval of decoded data, request-driven calls, ...)
 #   Audit            new admins, open registration, site address changes, PHP in uploads, world-writable
 #                    files, exposed backups/logs, wp-config.php/.htaccess changes
@@ -88,6 +88,8 @@ IGNORE_SILENCE_IS_GOLDEN=1              # skip index.php files with no code (emp
 PATTERN_TIMEOUT=900                     # seconds for the suspicious-code search per site
 # Options skipped by the database check (regex on option_name): caches that legitimately hold JS
 DB_IGNORE_OPTIONS='^(_site)?_transient_|^rocket_|^wpseo|^elementor_|_cache$'
+# Post types skipped by the database check (WordPress's own embed cache, revisions, Customizer drafts...)
+DB_SKIP_POST_TYPES="'revision','nav_menu_item','oembed_cache','customize_changeset','user_request','wp_global_styles'"
 # Suspicious PHP patterns: "label::PCRE"
 SUSPICIOUS_PATTERNS=(
     'eval of decoded data::eval\s*\(\s*(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|rawurldecode|hex2bin)\s*\('
@@ -268,32 +270,65 @@ PHP
 read -r -d '' AUDIT_PHP <<'PHP'
 global $wpdb;
 $limit = 5000;
-$re = '~(eval\s*\(|atob\s*\(|String\.fromCharCode|base64_decode|gzinflate|unescape\s*\(|document\.write\s*\(\s*unescape|<iframe[^>]*(display\s*:\s*none|visibility\s*:\s*hidden|width\s*=\s*["\']?0["\'\s>]|height\s*=\s*["\']?0["\'\s>])|<div[^>]*display\s*:\s*none[^>]*>\s*<a\s)~i';
-$likes = ['eval(', 'atob(', 'fromCharCode', 'base64_decode', 'gzinflate', 'unescape(', '<iframe', 'display:none', 'display: none'];
-$where = function ($col) use ($wpdb, $likes) {
-    return '(' . implode(' OR ', array_map(fn($l) => "$col LIKE '%" . esc_sql($wpdb->esc_like($l)) . "%'", $likes)) . ')';
+
+// Iframes from these hosts (and WordPress's own oEmbed iframes) are normal embeds, not injections
+$trusted = '~^(?:[a-z0-9-]+\.)*(youtube\.com|youtube-nocookie\.com|youtu\.be|vimeo\.com|google\.com|maps\.google\.com|spotify\.com|soundcloud\.com|twitter\.com|x\.com|instagram\.com|facebook\.com|tiktok\.com|dailymotion\.com|reddit\.com|pinterest\.com|giphy\.com|imgur\.com|wordpress\.com|wp\.com)$~i';
+$obf = '~eval\s*\(|atob\s*\(|String\.fromCharCode|unescape\s*\(|new\s+Function\s*\(|(?:\\\\x[0-9a-f]{2}){12,}~i';
+
+// Returns [label, matched text] for the first real injection sign, or null
+$inspect = function ($html) use ($trusted, $obf) {
+    // Code samples and comments are not executed
+    $h = preg_replace('~<(pre|code)\b[^>]*>.*?</\1>~is', ' ', $html);
+    $h = preg_replace('~<!--.*?-->~s', ' ', $h);
+    // Drop WordPress oEmbed iframes and iframes from trusted hosts
+    $h = preg_replace_callback('~<iframe\b[^>]*>~i', function ($m) use ($trusted) {
+        if (preg_match('~class\s*=\s*["\'][^"\']*wp-embedded-content~i', $m[0])) return ' ';
+        if (preg_match('~src\s*=\s*["\']?(?:https?:)?//([^/"\'\s>]+)~i', $m[0], $u) && preg_match($trusted, $u[1])) return ' ';
+        return $m[0];
+    }, $h);
+    // 1. Obfuscated JavaScript inside <script> blocks
+    if (preg_match_all('~<script\b[^>]*>(.*?)</script>~is', $h, $scripts)) {
+        foreach ($scripts[1] as $js) {
+            if (preg_match($obf, $js, $m)) return ['Obfuscated script', $m[0]];
+            if (preg_match('~document\.write\s*\(\s*unescape|window\.location(?:\.href)?\s*=\s*atob~i', $js, $m)) return ['Obfuscated script', $m[0]];
+        }
+    }
+    // 2. Obfuscated code in event handlers or javascript: links
+    if (preg_match('~\son[a-z]+\s*=\s*["\'][^"\']*(?:eval\s*\(|atob\s*\(|fromCharCode|unescape\s*\()~i', $h, $m)) return ['Script in event handler', $m[0]];
+    if (preg_match('~href\s*=\s*["\']\s*javascript:[^"\']*(?:eval|atob|fromCharCode|unescape)~i', $h, $m)) return ['javascript: link', $m[0]];
+    // 3. Hidden or 0/1-pixel iframes (trusted embeds already removed)
+    if (preg_match('~<iframe\b[^>]*(?:display\s*:\s*none|visibility\s*:\s*hidden|\bwidth\s*=\s*["\']?[01]["\'\s>]|\bheight\s*=\s*["\']?[01]["\'\s>])[^>]*>~i', $h, $m)) return ['Hidden iframe', $m[0]];
+    // 4. Hidden links (classic SEO spam): link inside an invisible or off-screen element
+    if (preg_match('~<(div|span|p)\b[^>]*style\s*=\s*["\'][^"\']*(?:display\s*:\s*none|visibility\s*:\s*hidden|(?:left|top|text-indent)\s*:\s*-\d{3,}px|font-size\s*:\s*0(?:px)?\s*[;"\'])[^"\']*["\'][^>]*>(?:(?!</\1>).){0,2000}?<a\s[^>]*href\s*=\s*["\']https?://~is', $h, $m)) return ['Hidden link', $m[0]];
+    return null;
 };
 $snip = function ($text, $m) {
     $pos = stripos($text, $m);
-    $s = substr($text, max(0, $pos - 30), 140);
+    $s = substr($text, max(0, (int) $pos - 30), 160);
     return trim(preg_replace('/\s+/', ' ', $s));
+};
+// Cheap SQL pre-filter; the exact checks run in PHP above
+$likes = ['<script', '<iframe', 'javascript:', 'onload=', 'onerror=', 'onmouseover=', 'display:none', 'display: none', 'visibility:hidden', 'visibility: hidden', '-9999px', 'font-size:0', 'font-size: 0'];
+$where = function ($col) use ($wpdb, $likes) {
+    return '(' . implode(' OR ', array_map(fn($l) => "$col LIKE '%" . esc_sql($wpdb->esc_like($l)) . "%'", $likes)) . ')';
 };
 $out = ['db' => [], 'admins' => [],
         'siteurl' => get_option('siteurl'), 'home' => get_option('home'),
         'users_can_register' => (int) get_option('users_can_register'), 'default_role' => (string) get_option('default_role')];
+
 $rows = $wpdb->get_results("SELECT ID, post_type, post_status, post_title, post_content FROM {$wpdb->posts}
-    WHERE post_type NOT IN ('revision','nav_menu_item') AND " . $where('post_content') . " LIMIT $limit");
+    WHERE post_type NOT IN (__SKIPTYPES__) AND " . $where('post_content') . " LIMIT $limit");
 foreach ((array) $rows as $r) {
-    if (preg_match($re, $r->post_content, $m)) {
+    if ($hit = $inspect($r->post_content)) {
         $out['db'][] = ['where' => "post #{$r->ID} ({$r->post_type}, {$r->post_status}): " . mb_substr($r->post_title, 0, 60),
-                        'detail' => 'Suspicious content: ' . $snip($r->post_content, $m[0])];
+                        'detail' => $hit[0] . ': ' . $snip($r->post_content, $hit[1])];
     }
 }
 $rows = $wpdb->get_results("SELECT option_name, option_value FROM {$wpdb->options} WHERE " . $where('option_value') . " LIMIT $limit");
 foreach ((array) $rows as $r) {
     if (preg_match('~__IGNORE__~', $r->option_name)) continue;
-    if (preg_match($re, $r->option_value, $m)) {
-        $out['db'][] = ['where' => "option {$r->option_name}", 'detail' => 'Suspicious content: ' . $snip($r->option_value, $m[0])];
+    if ($hit = $inspect($r->option_value)) {
+        $out['db'][] = ['where' => "option {$r->option_name}", 'detail' => $hit[0] . ': ' . $snip($r->option_value, $hit[1])];
     }
 }
 foreach (get_users(['role' => 'administrator', 'fields' => ['user_login', 'user_email', 'user_registered']]) as $u) {
@@ -444,7 +479,8 @@ for VHOST_DIR in "${DIRS[@]}"; do
     N=$(wc -l < "$WORK/recent"); [[ $N -gt $LIST_LIMIT ]] && add_row recent "(more)" "$((N - LIST_LIMIT)) more files changed"
 
     # --- Database + admin/settings audit (one WP-CLI call) ---
-    AUDIT_OUT=$(wp eval "${AUDIT_PHP//__IGNORE__/$DB_IGNORE_OPTIONS}" 2>"$WORK/err")
+    AUDIT_CODE="${AUDIT_PHP//__IGNORE__/$DB_IGNORE_OPTIONS}"
+    AUDIT_OUT=$(wp eval "${AUDIT_CODE//__SKIPTYPES__/$DB_SKIP_POST_TYPES}" 2>"$WORK/err")
     AUDIT=$(grep -o '__SEC__.*' <<< "$AUDIT_OUT" | tail -n 1 | sed 's/^__SEC__//')
     if jq -e 'type == "object"' <<< "$AUDIT" >/dev/null 2>&1; then
         jq -r --argjson n "$LIST_LIMIT" '.db[:$n][] | [.where, .detail] | @tsv' <<< "$AUDIT" |
