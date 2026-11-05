@@ -197,9 +197,12 @@ slack_files() {
 # Helpers
 # ---------------------------------------------------------------------------
 # Rows excluding the header line
-count_rows() { [[ -s "$1" ]] && { tail -n +2 "$1" | grep -c '[^[:space:]]'; } || echo 0; }
+# (grep -c prints "0" AND exits 1 when nothing matches, so never chain it with "|| echo 0")
+count_rows() { [[ -s "$1" ]] || { echo 0; return 0; }; tail -n +2 "$1" | grep -c '[^[:space:]]'; return 0; }
+# Findings of one type in a report, not counting "(more)" notes
+count_src() { grep "^$1," "$2" | grep -vc "^$1,\"(more)\""; return 0; }
 # "recent" rows are information only, so they don't count as a change worth alerting on
-fingerprint() { [[ -s "$1" ]] && tail -n +2 "$1" | grep -v '^recent,' | sort | md5sum | cut -d' ' -f1 || echo "empty"; }
+fingerprint() { [[ -s "$1" ]] || { echo "empty"; return 0; }; tail -n +2 "$1" | { grep -v '^recent,' || true; } | sort | md5sum | cut -d' ' -f1; }
 
 publish() {
     local src="$1" dest="$2" tmp
@@ -583,12 +586,12 @@ for VHOST in "${SITES[@]}"; do
         fi
     fi
 
-    MALWARE_HITS=$(grep -c '^malware,' "$MAL_OUT")
-    MODIFIED=$(grep -c '^checksum,' "$MAL_OUT")
-    DBHITS=$(grep -c '^database,' "$MAL_OUT")
-    PATTERNS=$(grep -c '^pattern,' "$MAL_OUT")
-    AUDITS=$(grep -c '^audit,' "$MAL_OUT")
-    RECENT=$(grep -c '^recent,' "$MAL_OUT")
+    MALWARE_HITS=$(count_src malware "$MAL_OUT")
+    MODIFIED=$(count_src checksum "$MAL_OUT")
+    DBHITS=$(count_src database "$MAL_OUT")
+    PATTERNS=$(count_src pattern "$MAL_OUT")
+    AUDITS=$(count_src audit "$MAL_OUT")
+    RECENT=$(count_src recent "$MAL_OUT")
     VULNS=$(count_rows "$VULN_OUT")
 
     MAL_CHANGED=0 VULN_CHANGED=0
