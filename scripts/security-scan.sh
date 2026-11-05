@@ -84,7 +84,7 @@ LIST_LIMIT=50                           # max rows per check per site
 IGNORE_FILES=(
     'wp-admin/cookie.txt'
 )
-IGNORE_SILENCE_IS_GOLDEN=1              # skip placeholder index.php files ("Silence is golden")
+IGNORE_SILENCE_IS_GOLDEN=1              # skip index.php files with no code (empty, or only <?php + comments like "Silence is golden")
 PATTERN_TIMEOUT=900                     # seconds for the suspicious-code search per site
 # Options skipped by the database check (regex on option_name): caches that legitimately hold JS
 DB_IGNORE_OPTIONS='^(_site)?_transient_|^rocket_|^wpseo|^elementor_|_cache$'
@@ -326,13 +326,15 @@ is_ignored() {
     done
     if [[ "$IGNORE_SILENCE_IS_GOLDEN" == "1" && "${loc##*/}" == "index.php" ]]; then
         f="$root/$loc"
-        # Only a pure placeholder: once PHP comments/whitespace are stripped, no code may remain
-        # (attackers often append backdoors to "Silence is golden" files)
-        # The whole file must be: optional BOM, <?php, then only whitespace and comments (// # or /* */),
-        # optionally ?>. A "?>" inside a // comment ends PHP mode, so it is not allowed there.
-        if [[ -f "$f" && $(stat -c %s "$f" 2>/dev/null || echo 9999) -le 1024 ]] && grep -qi 'silence is golden' "$f" 2>/dev/null \
-            && grep -Pzq '\A(?:\xEF\xBB\xBF)?\s*<\?php(?:\s|//(?:(?!\?>)[^\n])*|#(?:(?!\?>)[^\n])*|/\*(?:(?!\*/)[\s\S])*\*/)*(?:\?>\s*)?\z' "$f" 2>/dev/null; then
-            return 0
+        # Ignore index.php files with no code: empty, whitespace only, or <?php followed only by comments
+        # (e.g. "Silence is golden") and an optional ?>. Anything with code is still reported, since
+        # attackers often append backdoors to these placeholders. A "?>" inside a // comment ends PHP
+        # mode, so it is not allowed there.
+        if [[ -f "$f" && $(stat -c %s "$f" 2>/dev/null || echo 9999) -le 1024 ]]; then
+            if ! grep -q '[^[:space:]]' "$f" 2>/dev/null \
+                || grep -Pzq '\A(?:\xEF\xBB\xBF)?\s*<\?php(?:\s|//(?:(?!\?>)[^\n])*|#(?:(?!\?>)[^\n])*|/\*(?:(?!\*/)[\s\S])*\*/)*(?:\?>\s*)?\z' "$f" 2>/dev/null; then
+                return 0
+            fi
         fi
     fi
     return 1
