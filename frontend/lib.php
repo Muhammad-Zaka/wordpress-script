@@ -90,7 +90,7 @@ function read_wf_csv(string $file, array $labels, bool $forceHeader): array
 function load_wordfence(string $slug, array $config): array
 {
     $result = ['available' => false, 'issues' => 0, 'vulns' => 0, 'modified_count' => 0, 'db_count' => 0, 'pattern_count' => 0,
-               'audit_count' => 0, 'recent_count' => 0, 'total' => 0, 'malware_skipped' => false, 'scanned_at' => null, 'status' => null,
+               'audit_count' => 0, 'keyfile_changes' => [], 'recent_count' => 0, 'total' => 0, 'malware_skipped' => false, 'scanned_at' => null, 'status' => null,
                'malware' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'vuln'    => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
                'modified' => ['available' => false, 'rows' => [], 'header' => [], 'count' => 0],
@@ -135,7 +135,10 @@ function load_wordfence(string $slug, array $config): array
     $result['modified_count'] = $result['modified']['count'];
     $result['db_count']       = $result['database']['count'];
     $result['pattern_count']  = $result['pattern']['count'];
-    $result['audit_count']    = $result['audit']['count'];
+    // "Changed since the previous scan" rows (wp-config.php, .htaccess, index.php...) are notes, not warnings
+    $isKeyChange = fn($r) => str_starts_with((string) ($r[1] ?? ''), 'Changed since the previous scan');
+    $result['keyfile_changes'] = array_values(array_map(fn($r) => (string) $r[0], array_filter($result['audit']['rows'], $isKeyChange)));
+    $result['audit_count']    = $result['audit']['count'] - count($result['keyfile_changes']);
     $result['recent_count']   = $result['recent']['count'];
     $result['total']          = $result['issues'] + $result['vulns'] + $result['modified_count'] + $result['db_count'] + $result['pattern_count'] + $result['audit_count'];
     $result['scanned_at'] = !empty($result['status']['scanned_at']) ? strtotime($result['status']['scanned_at'])
@@ -306,8 +309,9 @@ function health_checks(array $s, array $config): array
     if ($s['_wf']['modified_count'] > 0)                 $add('warning', 'Modified files', plural($s['_wf']['modified_count'], 'file') . ' differ from the official WordPress/plugin versions');
     if ($s['_wf']['db_count'] > 0)                       $add('danger', 'Suspicious database content', plural($s['_wf']['db_count'], 'post/option') . ' with injected scripts or hidden links');
     if ($s['_wf']['pattern_count'] > 0)                  $add('warning', 'Suspicious code', plural($s['_wf']['pattern_count'], 'match') . ' of obfuscated or backdoor-like PHP');
+    if ($s['_wf']['keyfile_changes'])                    $add('info', 'Key files changed', implode(', ', $s['_wf']['keyfile_changes']) . ' changed since the previous scan');
     if ($s['_wf']['audit_count'] > 0) {
-        $first = $s['_wf']['audit']['rows'][0] ?? [];
+        $first = array_values(array_filter($s['_wf']['audit']['rows'], fn($r) => !str_starts_with((string) ($r[1] ?? ''), 'Changed since the previous scan')))[0] ?? [];
         $add('warning', 'Security audit', plural($s['_wf']['audit_count'], 'finding') . (isset($first[1]) ? ', e.g. ' . $first[1] : ''));
     }
     if ($s['_wf']['vulns'] > 0)                          $add('warning', 'Known vulnerabilities', plural($s['_wf']['vulns'], 'vulnerable plugin/theme/core item') . ', update needed');
