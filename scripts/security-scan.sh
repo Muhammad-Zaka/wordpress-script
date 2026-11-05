@@ -272,7 +272,7 @@ global $wpdb;
 $limit = 5000;
 
 // Iframes from these hosts (and WordPress's own oEmbed iframes) are normal embeds, not injections
-$trusted = '~^(?:[a-z0-9-]+\.)*(youtube\.com|youtube-nocookie\.com|youtu\.be|vimeo\.com|google\.com|maps\.google\.com|spotify\.com|soundcloud\.com|twitter\.com|x\.com|instagram\.com|facebook\.com|tiktok\.com|dailymotion\.com|reddit\.com|pinterest\.com|giphy\.com|imgur\.com|wordpress\.com|wp\.com)$~i';
+$trusted = '~^(?:[a-z0-9-]+\.)*(youtube\.com|youtube-nocookie\.com|youtu\.be|vimeo\.com|google\.com|maps\.google\.com|spotify\.com|soundcloud\.com|twitter\.com|x\.com|instagram\.com|facebook\.com|tiktok\.com|dailymotion\.com|reddit\.com|pinterest\.com|giphy\.com|imgur\.com|wordpress\.com|wp\.com|googletagmanager\.com|doubleclick\.net|googlesyndication\.com|google-analytics\.com)$~i';
 $obf = '~eval\s*\(|atob\s*\(|String\.fromCharCode|unescape\s*\(|new\s+Function\s*\(|(?:\\\\x[0-9a-f]{2}){12,}~i';
 
 // Returns [label, matched text] for the first real injection sign, or null
