@@ -6,6 +6,7 @@ Collects WordPress + Cloudflare metrics for every OpenLiteSpeed vhost and shows 
 scripts/wordpress-metrics.sh   collector (run as root via cron) -> one JSON per site
 scripts/security-scan.sh       vulnerability, modified-file and malware scans -> dashboard reports, Slack alerts
 scripts/cloudflare-set-min-tls.sh  raise Cloudflare minimum TLS across zones
+scripts/cloudflare-zone-setting.sh check/change any Cloudflare zone setting (e.g. 0-RTT) across zones
 scripts/cloudflare-zone-ids.sh list Cloudflare Zone ID + Account ID for every site
 scripts/cloudflare-plugin-keys.sh  set the Cloudflare WP plugin's API token per site, by account
 frontend/config.php            paths, thresholds, Cloudflare standard, optional auth
@@ -173,6 +174,22 @@ Before writing, each token is checked with Cloudflare (active, and able to see t
 without the plugin, without a zone, or whose account has no token are skipped. Tokens are passed to
 WP-CLI on stdin (never on the command line), logs show only the last 4 characters, and the previous
 values are saved in `~/.site-setup/cloudflare-plugin-backups/` (mode 600) for rollback.
+
+## Changing a Cloudflare setting across zones (e.g. 0-RTT)
+
+`scripts/cloudflare-zone-setting.sh SETTING VALUE` works like the TLS script: dry run unless `--apply`,
+WordPress vhosts by default (`--all-zones` or domain names otherwise), zones shared by several vhosts are
+changed once, and every run writes a CSV audit log that `--rollback` can replay.
+
+```bash
+./scripts/cloudflare-zone-setting.sh 0rtt on                  # dry run
+./scripts/cloudflare-zone-setting.sh 0rtt on --apply          # enable 0-RTT
+./scripts/cloudflare-zone-setting.sh early_hints on --apply   # any other zone setting id
+./scripts/cloudflare-zone-setting.sh --rollback cf-0rtt-<stamp>.csv --apply
+```
+
+For 0-RTT it first checks TLS 1.3 and skips zones where it is off (0-RTT needs it). Settings the zone's plan
+can't change are skipped. Needs **Zone Settings: Edit** on the API token (the global key works as-is).
 
 ## Raising Cloudflare minimum TLS
 
